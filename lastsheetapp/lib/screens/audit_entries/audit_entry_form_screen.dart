@@ -19,9 +19,12 @@ class AuditEntryFormScreen extends StatefulWidget {
 
 class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _receivableAmountController = TextEditingController(); // Changed from _incomeController
-  final _payableAmountController = TextEditingController();    // Changed from _expenseController
-  final _remarksController = TextEditingController();         // Changed from _notesController
+  final _receivableAmountController =
+      TextEditingController(); // Changed from _incomeController
+  final _payableAmountController =
+      TextEditingController(); // Changed from _expenseController
+  final _remarksController =
+      TextEditingController(); // Changed from _notesController
   DateTime? _selectedCreatedAt; // Changed from _selectedAuditDate
   Group? _selectedGroup; // For selecting group
   bool _isLoading = false;
@@ -35,8 +38,10 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
     _groupsFuture = _apiService.fetchGroups(); // Fetch groups for dropdown
 
     if (widget.auditEntry != null) {
-      _receivableAmountController.text = widget.auditEntry!.receivableAmount.toString();
-      _payableAmountController.text = widget.auditEntry!.payableAmount.toString();
+      _receivableAmountController.text = widget.auditEntry!.receivableAmount
+          .toString();
+      _payableAmountController.text = widget.auditEntry!.payableAmount
+          .toString();
       _remarksController.text = widget.auditEntry!.remarks ?? '';
       _selectedCreatedAt = widget.auditEntry!.createdAt; // Use createdAt
     }
@@ -62,7 +67,11 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
 
       if (currentUser == null || currentUser.id == null) {
         if (mounted) {
-          CustomDialogs.showAlertDialog(context, 'အမှား', 'အသုံးပြုသူ အချက်အလက် မရှိပါ။');
+          CustomDialogs.showAlertDialog(
+            context,
+            'အမှား',
+            'အသုံးပြုသူ အချက်အလက် မရှိပါ။',
+          );
           setState(() {
             _isLoading = false;
           });
@@ -72,7 +81,11 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
 
       if (_selectedGroup == null || _selectedCreatedAt == null) {
         if (mounted) {
-          CustomDialogs.showAlertDialog(context, 'အမှား', 'လိုအပ်သော အချက်အလက်များ ဖြည့်သွင်းပါ။ (အဖွဲ့၊ ဖန်တီးသည့်နေ့စွဲ)');
+          CustomDialogs.showAlertDialog(
+            context,
+            'အမှား',
+            'လိုအပ်သော အချက်အလက်များ ဖြည့်သွင်းပါ။ (အဖွဲ့၊ ဖန်တီးသည့်နေ့စွဲ)',
+          );
           setState(() {
             _isLoading = false;
           });
@@ -88,7 +101,9 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
         auditorUsername: currentUser.username, // Auditor Username
         receivableAmount: double.parse(_receivableAmountController.text),
         payableAmount: double.parse(_payableAmountController.text),
-        remarks: _remarksController.text.isEmpty ? null : _remarksController.text,
+        remarks: _remarksController.text.isEmpty
+            ? null
+            : _remarksController.text,
         createdAt: _selectedCreatedAt!, // Use selected createdAt
         lastUpdated: DateTime.now(), // Always update lastUpdated
       );
@@ -129,7 +144,12 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
         }
       } catch (e) {
         if (mounted) {
-          CustomDialogs.showFlushbar(context, 'Error', 'အမှားအယွင်းရှိခဲ့ပါသည်။: $e', MessageType.error); // Added MessageType
+          CustomDialogs.showFlushbar(
+            context,
+            'Error',
+            'အမှားအယွင်းရှိခဲ့ပါသည်။: $e',
+            MessageType.error,
+          ); // Added MessageType
         }
       } finally {
         if (mounted) {
@@ -145,7 +165,11 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.auditEntry == null ? 'Audit မှတ်တမ်းအသစ်' : 'Audit မှတ်တမ်း ပြင်ဆင်မည်'),
+        title: Text(
+          widget.auditEntry == null
+              ? 'Audit မှတ်တမ်းအသစ်'
+              : 'Audit မှတ်တမ်း ပြင်ဆင်မည်',
+        ),
         backgroundColor: Colors.green,
         foregroundColor: Colors.white,
       ),
@@ -157,10 +181,13 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               TextFormField(
-                controller: _receivableAmountController, // Changed to receivableAmountController
+                controller:
+                    _receivableAmountController, // Changed to receivableAmountController
                 decoration: InputDecoration(
                   labelText: 'ရရန်ပမာဏ (Receivable Amount)',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
                 keyboardType: TextInputType.number,
                 validator: (value) {
@@ -175,10 +202,13 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
               ),
               const SizedBox(height: 15),
               TextFormField(
-                controller: _payableAmountController, // Changed to payableAmountController
+                controller:
+                    _payableAmountController, // Changed to payableAmountController
                 decoration: InputDecoration(
                   labelText: 'ပေးရန်ပမာဏ (Payable Amount)',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
                 keyboardType: TextInputType.number,
                 validator: (value) {
@@ -198,7 +228,11 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   } else if (snapshot.hasError) {
-                    return Center(child: Text('အဖွဲ့များ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်။: ${snapshot.error}'));
+                    return Center(
+                      child: Text(
+                        'အဖွဲ့များ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်။: ${snapshot.error}',
+                      ),
+                    );
                   } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
                     return const Center(child: Text('အဖွဲ့များ မရှိသေးပါ။'));
                   } else {
@@ -213,7 +247,9 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
                       value: _selectedGroup,
                       decoration: InputDecoration(
                         labelText: 'အဖွဲ့',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                       items: groups.map((group) {
                         return DropdownMenuItem<Group>(
@@ -263,7 +299,9 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
                 controller: _remarksController, // Changed to _remarksController
                 decoration: InputDecoration(
                   labelText: 'မှတ်ချက် (ရှိလျှင်)',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
                 maxLines: 3,
               ),
@@ -274,14 +312,21 @@ class _AuditEntryFormScreenState extends State<AuditEntryFormScreen> {
                       onPressed: _saveAuditEntry,
                       style: ElevatedButton.styleFrom(
                         minimumSize: const Size(double.infinity, 50),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
                         elevation: 5,
                       ),
                       child: Text(
-                        widget.auditEntry == null ? 'မှတ်တမ်း ထည့်မည်' : 'မှတ်တမ်း ပြင်ဆင်မည်',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        widget.auditEntry == null
+                            ? 'မှတ်တမ်း ထည့်မည်'
+                            : 'မှတ်တမ်း ပြင်ဆင်မည်',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
             ],

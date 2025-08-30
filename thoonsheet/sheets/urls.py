@@ -9,6 +9,8 @@ from .views import (
     GroupViewSet,
     AuditEntryViewSet,
     TransactionViewSet,
+    # ChangePasswordView,
+    # SetUserPasswordView
 )
 
 router = DefaultRouter()
@@ -20,5 +22,6 @@ router.register(r'transactions', TransactionViewSet)
 urlpatterns = [
     path('', include(router.urls)),
     path('audit-summary/', views.AuditSummaryView.as_view(), name='audit_summary'),
-    
+    path('change-password/', views.ChangePasswordView.as_view(), name='change_password'),
+    path('users/<int:pk>/password/', views.SetUserPasswordView.as_view(), name='change_password'),
 ]

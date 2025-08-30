@@ -1,3 +1,5 @@
+import 'dart:io';
+
 class AuditEntry {
   final int? id;
   final int group; // group ID
@@ -21,6 +23,8 @@ class AuditEntry {
     this.remarks,
     this.createdAt,
     this.lastUpdated,
+    File? imageFile,
+    String? imageUrl,
   });
 
   factory AuditEntry.fromJson(Map<String, dynamic> json) {
@@ -33,8 +37,12 @@ class AuditEntry {
       receivableAmount: double.parse(json['receivable_amount'].toString()),
       payableAmount: double.parse(json['payable_amount'].toString()),
       remarks: json['remarks'],
-      createdAt: json['created_at'] != null ? DateTime.parse(json['created_at']) : null,
-      lastUpdated: json['last_updated'] != null ? DateTime.parse(json['last_updated']) : null,
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : null,
+      lastUpdated: json['last_updated'] != null
+          ? DateTime.parse(json['last_updated'])
+          : null,
     );
   }
 

@@ -25,4 +25,14 @@ class IsAuditorUser(permissions.BasePermission):
             return obj.submitted_by == request.user
         if hasattr(obj, 'auditor'): # For AuditEntry objects
             return obj.auditor == request.user
-        return False # Deny access for other object types
+        return False
+
+
+class DenyAll(permissions.BasePermission):
+    """Permission that denies all requests."""
+
+    def has_permission(self, request, view):
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return False

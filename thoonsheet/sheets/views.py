@@ -2,11 +2,12 @@
 
 from decimal import Decimal
 from django.forms import DecimalField
-from rest_framework import viewsets, status, permissions
+from django.shortcuts import get_object_or_404
+from rest_framework import viewsets, status, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser 
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Sum, Case, When, F, DecimalField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -18,10 +19,12 @@ from accounts.models import User # <-- သင့် User model လမ်းက�
 
 from .models import Group, PaymentAccount, Transaction, AuditEntry
 from .serializers import (
-    AuditSummarySerializer, GroupSerializer, OwnerApproveRejectSerializer, PaymentAccountSerializer, TransactionSerializer,
+    AuditSummarySerializer, ChangePasswordSerializer, GroupSerializer, OwnerApproveRejectSerializer, PaymentAccountSerializer, SetUserPasswordSerializer, TransactionSerializer,
     AuditEntrySerializer, UserSerializer # <-- UserSerializer ကို import လုပ်ထားကြောင်း သေချာပါစေ။
 )
-from .permissions import IsAuditorUser, IsOwnerUser
+from .permissions import IsAuditorUser, IsOwnerUser, DenyAll
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.views import APIView
 
 # Djoser views and related imports
@@ -184,132 +187,134 @@ class TransactionViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
+    # ---- Filters for frontend duplicate & convenience ----
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_fields = ['transfer_id_last_6_digits', 'status', 'transaction_type',
+                        'submitted_by', 'payment_account', 'group', 'transaction_date']
+    ordering_fields = ['submitted_at', 'transaction_date', 'amount']
+    search_fields = ['transfer_id_last_6_digits', 'owner_notes']
+
     def get_permissions(self):
         user = self.request.user
         if not user.is_authenticated:
-            self.permission_classes = [IsAuthenticated]
-            return [permission() for permission in self.permission_classes]
-
-        if user.user_type == 'owner':
-            self.permission_classes = [IsOwnerUser]
-        elif user.user_type == 'auditor':
-            if self.action == 'create':
-                self.permission_classes = [IsAuditorUser]
-            elif self.action in ['list', 'retrieve']:
-                self.permission_classes = [IsAuditorUser]
-            elif self.action in ['update', 'partial_update']:
-                self.permission_classes = [IsAuditorUser]
-            elif self.action == 'destroy':
-                self.permission_classes = [permissions.DenyAll]
+            self.permission_classes = [permissions.IsAuthenticated]
+        else:
+            if user.user_type == 'owner': # type: ignore
+                self.permission_classes = [IsOwnerUser]
+            elif user.user_type == 'auditor': # type: ignore
+                # auditor can: create/list/retrieve/update(re-submit rejected), but not destroy
+                if self.action in ['create', 'list', 'retrieve', 'update', 'partial_update', 're_submit']:
+                    self.permission_classes = [IsAuditorUser]
+                elif self.action in ['destroy']:
+                    self.permission_classes = [DenyAll]
+                else:
+                    self.permission_classes = [DenyAll]
             else:
-                self.permission_classes = [permissions.DenyAll]
-        else:
-            self.permission_classes = [permissions.DenyAll]
+                self.permission_classes = [DenyAll]
 
-        if self.action in ['approve', 'reject', 'summary', 'pending', 'rejected']:
-            self.permission_classes = [IsOwnerUser]
-        
-        return [permission() for permission in self.permission_classes]
-    
+            # owner-only custom actions
+            if self.action in ['approve', 'reject', 'summary', 'pending', 'rejected']:
+                self.permission_classes = [IsOwnerUser]
+
+        return [pc() for pc in self.permission_classes]
+
     def get_queryset(self):
-        queryset = super().get_queryset()
+        qs = super().get_queryset()
         user = self.request.user
-
-        if user.is_superuser or user.user_type == 'owner':
-            return queryset
-        elif user.user_type == 'auditor':
-            return queryset.filter(submitted_by=user)
-        else:
+        if not user.is_authenticated:
             return Transaction.objects.none()
+        if user.is_superuser or user.user_type == 'owner':
+            return qs
+        if user.user_type == 'auditor':
+            return qs.filter(submitted_by=user)
+        return Transaction.objects.none()
 
     def perform_create(self, serializer):
+        # submitted_by ကို serializer.create() ထဲမှာလည်း handle လုပ်ထားလို့ပါ—but double set OK
         serializer.save(submitted_by=self.request.user)
 
     def perform_update(self, serializer):
-        if self.request.user.user_type == 'owner':
+        user = self.request.user
+        instance = serializer.instance
+
+        if user.user_type == 'owner': # type: ignore
             serializer.save()
-        elif self.request.user.user_type == 'auditor':
-            instance = serializer.instance
-            if instance.submitted_by != self.request.user:
-                raise permissions.PermissionDenied("You can only update your own transactions.")
+            return
+
+        if user.user_type == 'auditor': # type: ignore
+            if instance.submitted_by != user:
+                raise permissions.PermissionDenied("You can only update your own transactions.") # type: ignore
             if instance.status != 'rejected':
-                raise permissions.PermissionDenied("You can only re-submit rejected transactions.")
-            
-            instance.status = 'pending'
-            instance.approved_by_owner_at = None
-            instance.owner_notes = None
+                raise permissions.PermissionDenied("You can only re-submit rejected transactions.") # type: ignore
+            # Re-submit as pending; owner review info clear
             serializer.save(status='pending', approved_by_owner_at=None, owner_notes=None)
-        else:
-            raise permissions.PermissionDenied("You do not have permission to update this transaction.")
+            return
 
+        raise permissions.PermissionDenied("You do not have permission to update this transaction.")
 
-    @action(detail=False, methods=['get'], permission_classes=[IsOwnerUser])
+    # -------- Owner-only listing shortcuts --------
+    @action(detail=False, methods=['get'])
     def pending(self, request):
         pending_transactions = self.get_queryset().filter(status='pending')
-        serializer = self.get_serializer(pending_transactions, many=True)
-        return Response(serializer.data)
+        ser = self.get_serializer(pending_transactions, many=True)
+        return Response(ser.data)
 
-    @action(detail=False, methods=['get'], permission_classes=[IsOwnerUser])
-    def rejected(self, request):
+    @action(detail=False, methods=['get'])
+    def rejected(self, request, pk=None):
         rejected_transactions = self.get_queryset().filter(status='rejected')
-        serializer = self.get_serializer(rejected_transactions, many=True)
-        return Response(serializer.data)
+        ser = self.get_serializer(rejected_transactions, many=True)
+        return Response(ser.data)
 
-    @action(detail=True, methods=['patch'], permission_classes=[IsOwnerUser])
+    # -------- Approve / Reject (owner) --------
+    @action(detail=True, methods=['patch', 'post'], permission_classes=[IsOwnerUser])
     def approve(self, request, pk=None):
-        try:
-            transaction = self.get_queryset().get(pk=pk)
-        except Transaction.DoesNotExist:
+        tx = self.get_queryset().filter(pk=pk).first()
+        if not tx:
             return Response({'detail': 'မှတ်တမ်းကို ရှာမတွေ့ပါ။'}, status=status.HTTP_404_NOT_FOUND)
-
-        if transaction.status != 'pending':
+        if tx.status != 'pending':
             return Response({'detail': 'ဤမှတ်တမ်းသည် စောင့်ဆိုင်းဆဲ အခြေအနေတွင် မရှိပါ။'}, status=status.HTTP_400_BAD_REQUEST)
-
         owner_notes = request.data.get('owner_notes')
-
-        transaction.status = 'approved'
-        transaction.approved_by_owner_at = timezone.now()
-        
+        tx.status = 'approved'
+        tx.approved_by_owner_at = timezone.now()
         if owner_notes is not None:
-            transaction.owner_notes = owner_notes
-        transaction.save()
-        return Response(self.get_serializer(transaction).data)
+            tx.owner_notes = owner_notes
+        tx.save()
+        return Response(self.get_serializer(tx).data)
 
-    @action(detail=True, methods=['patch'], permission_classes=[IsOwnerUser])
+    @action(detail=True, methods=['patch', 'post'], permission_classes=[IsOwnerUser])
     def reject(self, request, pk=None):
-        try:
-            transaction = self.get_queryset().get(pk=pk)
-        except Transaction.DoesNotExist:
+        tx = self.get_queryset().filter(pk=pk).first()
+        if not tx:
             return Response({'detail': 'မှတ်တမ်းကို ရှာမတွေ့ပါ။'}, status=status.HTTP_404_NOT_FOUND)
-
-        if transaction.status != 'pending':
+        if tx.status != 'pending':
             return Response({'detail': 'ဤမှတ်တမ်းသည် စောင့်ဆိုင်းဆဲ အခြေအနေတွင် မရှိပါ။'}, status=status.HTTP_400_BAD_REQUEST)
-
         owner_notes = request.data.get('owner_notes')
-
-        transaction.status = 'rejected'
-        transaction.approved_by_owner_at = timezone.now()
+        tx.status = 'rejected'
+        # reject မှာ approved_by_owner_at မသတ်မှတ်
         if owner_notes is not None:
-            transaction.owner_notes = owner_notes
-        transaction.save()
-        return Response(self.get_serializer(transaction).data)
-    
-    @action(detail=True, methods=['post'], permission_classes=[IsAuditorUser])
-    def re_submit(self, request, pk=None):
-        transaction = self.get_object()
-        if transaction.status == 'rejected':
-            transaction.status = 'pending'
-            transaction.rejection_reason = None # Clear rejection reason
-            transaction.audited_by = None # Clear auditor if needed for re-audit
-            transaction.save()
-            serializer = self.get_serializer(transaction)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(
-            {"detail": "Transaction is not in 'rejected' status or cannot be re-submitted."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+            tx.owner_notes = owner_notes
+        tx.save()
+        return Response(self.get_serializer(tx).data)
 
-    @action(detail=False, methods=['get'], permission_classes=[IsOwnerUser])
+    # -------- Auditor re-submit endpoint (optional; update() နဲ့လည်း ရ) --------
+    @action(detail=True, methods=['post'])
+    def re_submit(self, request, pk=None):
+        tx = self.get_object()  # get_queryset() + permissions already applied
+        if request.user.user_type != 'auditor':
+            return Response({"detail": "Only auditor can re-submit."}, status=status.HTTP_403_FORBIDDEN)
+        if tx.submitted_by != request.user:
+            return Response({"detail": "You can only re-submit your own transactions."}, status=status.HTTP_403_FORBIDDEN)
+        if tx.status != 'rejected':
+            return Response({"detail": "Transaction is not in 'rejected' status."}, status=status.HTTP_400_BAD_REQUEST)
+
+        tx.status = 'pending'
+        tx.approved_by_owner_at = None
+        tx.owner_notes = None
+        tx.save()
+        return Response(self.get_serializer(tx).data, status=status.HTTP_200_OK)
+
+    # -------- Summary (owner) --------
+    @action(detail=False, methods=['get'])
     def summary(self, request):
         total_income = Transaction.objects.filter(
             transaction_type='income', status='approved'
@@ -344,19 +349,17 @@ class TransactionViewSet(viewsets.ModelViewSet):
                         output_field=DecimalField()
                     )
                 )
-            ) \
-            .order_by('group__name')
+            ).order_by('group__name')
 
         final_group_summary_data = []
         for item in group_summary_data:
             collected_amount = item['total_income'] or Decimal('0.00')
             target_amount = item['group__target_amount'] or Decimal('0.00')
-
             remaining_amount = Decimal('0.00')
             if target_amount > 0:
-                remaining = target_amount - collected_amount
-                if remaining > 0:
-                    remaining_amount = remaining
+                remain = target_amount - collected_amount
+                if remain > 0:
+                    remaining_amount = remain
 
             final_group_summary_data.append({
                 'group_name': item['group__name'],
@@ -372,7 +375,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
             'overall_summary': {
                 'total_income': total_income,
                 'total_expense': total_expense,
-                'net_balance': total_income - total_expense,
+                'net_balance': (total_income or Decimal('0.00')) - (total_expense or Decimal('0.00')),
             },
             'group_wise_summary': final_group_summary_data
         })
@@ -389,35 +392,63 @@ class AuditEntryViewSet(viewsets.ModelViewSet):
             self.permission_classes = [IsAuthenticated]
             return [permission() for permission in self.permission_classes]
 
-        if user.user_type == 'owner':
+        if user.user_type == 'owner': # type: ignore
             self.permission_classes = [IsOwnerUser]
-        elif user.user_type == 'auditor':
+        elif user.user_type == 'auditor': # type: ignore
             if self.action == 'create':
                 self.permission_classes = [IsAuditorUser]
             elif self.action in ['list', 'retrieve', 'update', 'partial_update']:
                 self.permission_classes = [IsAuditorUser]
             elif self.action == 'destroy':
-                self.permission_classes = [permissions.DenyAll]
+                self.permission_classes = [DenyAll]
             else:
-                self.permission_classes = [permissions.DenyAll]
+                self.permission_classes = [DenyAll]
         else:
-            self.permission_classes = [permissions.DenyAll]
+            self.permission_classes = [DenyAll]
 
         return [permission() for permission in self.permission_classes]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user
-        
         if user.is_superuser or user.user_type == 'owner':
             return queryset
         elif user.user_type == 'auditor':
             return queryset.filter(auditor=user)
         else:
             return AuditEntry.objects.none()
-            
     def perform_create(self, serializer):
         serializer.save(auditor=self.request.user)
+
+
+# class PasswordChangeView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+#         user = request.user
+#         target_user_id = request.data.get('user_id')
+#         new_password = request.data.get('new_password')
+
+#         if not new_password:
+#             return Response({'detail': 'New password is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+#         if target_user_id:
+#             if user.is_superuser or user.user_type == 'owner':
+#                 try:
+#                     target_user = User.objects.get(id=target_user_id)
+#                 except User.DoesNotExist:
+#                     return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+#             else:
+#                 return Response({'detail': 'You do not have permission to change this password.'}, status=status.HTTP_403_FORBIDDEN)
+#         else:
+#             target_user = user
+
+#         if user.user_type == 'auditor' and target_user != user:
+#             return Response({'detail': 'Auditors can only change their own password.'}, status=status.HTTP_403_FORBIDDEN)
+
+#         target_user.set_password(new_password)
+#         target_user.save()
+#         return Response({'detail': 'Password updated successfully.'})
 
 class AuditSummaryView(APIView):
     permission_classes = [IsOwnerUser]
@@ -466,3 +497,57 @@ class AuditSummaryView(APIView):
                 {"detail": "Failed to calculate audit summary."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+
+class ChangePasswordView(APIView):
+    """
+    POST /api/auth/password/change/
+    body: {old_password, new_password, new_password2}
+    auth: Token <token>
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        ser = ChangePasswordSerializer(data=request.data, context={'request': request})
+        ser.is_valid(raise_exception=True)
+
+        user = request.user
+        user.set_password(ser.validated_data['new_password']) # type: ignore
+        user.last_login = timezone.now()
+        user.save()
+
+        # Token rotation: ဟောင်း token ရုပ်သိမ်း၊ အသစ်ထုတ်
+        Token.objects.filter(user=user).delete()
+        new_token = Token.objects.create(user=user)
+
+        return Response(
+            {'detail': 'စကားဝှက် ပြောင်းလဲပြီးပါပြီ။', 'auth_token': new_token.key},
+            status=status.HTTP_200_OK
+        )
+
+
+class SetUserPasswordView(APIView):
+    """
+    POST /api/auth/users/<id>/password/
+    body: {new_password, new_password2}
+    auth: owner/admin only
+    """
+    # owner သာခွင့် – admin သတ်မှတ်ထားရင် IsAdminUser သို့မဟုတ် OR ပြုလုပ်နိုင်
+    permission_classes = [IsOwnerUser]
+
+    def post(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+        ser = SetUserPasswordSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        user.set_password(ser.validated_data['new_password']) # type: ignore
+        user.save()
+
+        # revoke all existing tokens for that user
+        Token.objects.filter(user=user).delete()
+
+        return Response(
+            {'detail': 'စကားဝှက် အသစ် သတ်မှတ်ပြီးပါပြီ (အသုံးပြုသူမှ ပြန်လော့ဂ်အင် လုပ်ပါ)'},
+            status=status.HTTP_200_OK
+        )

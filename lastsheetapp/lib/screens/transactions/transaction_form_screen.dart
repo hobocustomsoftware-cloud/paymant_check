@@ -3,6 +3,9 @@ import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:intl/intl.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:typed_data';
+import 'package:flutter/services.dart';
 
 import '../../services/api_service.dart';
 import '../../models/transaction.dart';
@@ -14,7 +17,6 @@ import '../../utils/constants.dart';
 
 class TransactionFormScreen extends StatefulWidget {
   final Transaction? transaction;
-
   TransactionFormScreen({this.transaction});
 
   @override
@@ -26,12 +28,20 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
   final _amountController = TextEditingController();
   final _transferIdController = TextEditingController();
   final _ownerNotesController = TextEditingController();
+
   DateTime? _selectedDate;
   Group? _selectedGroup;
   PaymentAccount? _selectedPaymentAccount;
   String? _selectedTransactionType;
-  File? _selectedImage;
+
+  File? _selectedImageFile; // mobile
+  Uint8List? _selectedImageBytes; // web
+  String? _selectedImageFileName;
+
   bool _isLoading = false;
+  bool _isCheckingDup = false; // transfer id duplicate (6-digit global)
+  bool _dupExists = false;
+  bool _clearExistingImage = false;
 
   final ApiService _apiService = ApiService();
   late Future<List<Group>> _groupsFuture;
@@ -52,6 +62,8 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
       _selectedTransactionType = widget.transaction!.transactionType;
       _ownerNotesController.text = widget.transaction!.ownerNotes ?? '';
     }
+
+    _transferIdController.addListener(_checkDuplicateIfReady);
   }
 
   @override
@@ -63,206 +75,336 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
   }
 
   Future<void> _pickImage() async {
-    final pickedFile = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (pickedFile != null) {
-      setState(() {
-        _selectedImage = File(pickedFile.path);
-      });
+    try {
+      final picker = ImagePicker();
+      final XFile? picked = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 2000,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+
+      final fileName = picked.name.isNotEmpty
+          ? picked.name
+          : (picked.path.isNotEmpty
+                ? picked.path.split('/').last
+                : 'upload.jpg');
+
+      if (kIsWeb) {
+        final bytes = await picked.readAsBytes();
+        setState(() {
+          _selectedImageFile = null;
+          _selectedImageBytes = bytes;
+          _selectedImageFileName = fileName;
+          _clearExistingImage = false;
+        });
+      } else {
+        setState(() {
+          _selectedImageFile = File(picked.path);
+          _selectedImageBytes = null;
+          _selectedImageFileName = fileName;
+          _clearExistingImage = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      CustomDialogs.showFlushbar(
+        context,
+        'Image Error',
+        'ပုံရွေးရာတွင် အမှား: $e',
+        MessageType.error,
+      );
     }
   }
 
   void _clearImage() {
     setState(() {
-      _selectedImage = null;
+      _selectedImageFile = null;
+      _selectedImageBytes = null;
+      _selectedImageFileName = null;
+      _clearExistingImage = true;
     });
   }
 
-  // Helper to build the correct image URL
   String _buildImageUrl(String? imageUrl) {
-    if (imageUrl == null || imageUrl.isEmpty) {
-      return '';
-    }
-    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    if (imageUrl == null || imageUrl.isEmpty) return '';
+    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))
       return imageUrl;
-    }
     return '${Constants.baseUrl}$imageUrl';
   }
 
-  Future<void> _saveTransaction() async {
-    if (_formKey.currentState!.validate()) {
+  // ---------- Duplicate check (global by 6 digits only) ----------
+  Future<void> _checkDuplicateIfReady() async {
+    final t = _transferIdController.text.trim();
+    if (t.length != 6) {
+      if (_dupExists || _isCheckingDup) {
+        setState(() {
+          _dupExists = false;
+          _isCheckingDup = false;
+        });
+      }
+      return;
+    }
+    setState(() => _isCheckingDup = true);
+    try {
+      final exists = await _apiService.existsTransferId(
+        transferIdLast6: t,
+        excludeId: widget.transaction?.id, // editing own row won't block
+      );
       if (!mounted) return;
       setState(() {
-        _isLoading = true;
+        _dupExists = exists;
+        _isCheckingDup = false;
       });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isCheckingDup = false);
+    }
+  }
+  // --------------------------------------------------------------
 
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final currentUser = authProvider.currentUser;
+  Future<void> _saveTransaction() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (!mounted) return;
 
-      if (currentUser == null || currentUser.id == null || currentUser.username == null) {
-        if (mounted) {
-          CustomDialogs.showAlertDialog(context, 'အမှား', 'အသုံးပြုသူ အချက်အလက် မရှိပါ။');
-          setState(() {
-            _isLoading = false;
-          });
-        }
-        return;
-      }
-
-      if (_selectedGroup == null || _selectedPaymentAccount == null || _selectedDate == null || _selectedTransactionType == null) {
-        if (mounted) {
-          CustomDialogs.showAlertDialog(context, 'အမှား', 'လိုအပ်သော အချက်အလက်များ ဖြည့်သွင်းပါ။ (အဖွဲ့၊ ငွေစာရင်း၊ နေ့စွဲ၊ အမျိုးအစား)');
-          setState(() {
-            _isLoading = false;
-          });
-        }
-        return;
-      }
-
-      final transactionToSave = Transaction(
-        id: widget.transaction?.id,
-        transactionDate: _selectedDate!,
-        group: _selectedGroup!.id!,
-        groupName: _selectedGroup!.name,
-        paymentAccount: _selectedPaymentAccount!.id!,
-        paymentAccountName: _selectedPaymentAccount!.paymentAccountName,
-        transferIdLast6Digits: _transferIdController.text,
-        amount: double.parse(_amountController.text),
-        transactionType: _selectedTransactionType!,
-        submittedBy: currentUser.id!,
-        submittedByUsername: currentUser.username, // Pass submittedByUsername
-        status: widget.transaction?.status ?? 'pending',
-        imageUrl: widget.transaction?.imageUrl,
-        approvedByOwnerAt: widget.transaction?.approvedByOwnerAt,
-        ownerNotes: _ownerNotesController.text.isEmpty ? null : _ownerNotesController.text,
-        submittedAt: widget.transaction?.submittedAt ?? DateTime.now(),
+    if (_dupExists) {
+      CustomDialogs.showAlertDialog(
+        context,
+        'မထည့်ရပါ',
+        'ဤ လွှဲပြောင်း ID (၆ လုံး) ကို ရှိပြီးသား ဖြစ်နေပါသည်။ ပြန်စစ်၍ပြင်၍ ထည့်ပါ။',
       );
+      return;
+    }
 
-      try {
-        bool clearImageOnBackend = _selectedImage == null && widget.transaction!.imageUrl != null && widget.transaction!.imageUrl!.isNotEmpty;
+    setState(() => _isLoading = true);
 
-        if (widget.transaction == null) {
-          await _apiService.createTransaction(transactionToSave, imageFile: _selectedImage);
-          if (mounted) {
-            CustomDialogs.showFlushbar(
-              context,
-              'Success',
-              'ငွေပေးချေမှုမှတ်တမ်းအသစ် ထည့်သွင်းပြီးပါပြီ။',
-              MessageType.success,
-              onDismissed: () {
-                if (mounted) {
-                  Navigator.of(context).pop();
-                }
-              },
-            );
-          }
-        } else {
-          await _apiService.updateTransaction(
-            transactionToSave,
-            imageFile: _selectedImage,
-            clearImage: clearImageOnBackend,
-          );
-          if (mounted) {
-            CustomDialogs.showFlushbar(
-              context,
-              'Success',
-              'ငွေပေးချေမှုမှတ်တမ်း ပြင်ဆင်ပြီးပါပြီ။',
-              MessageType.success,
-              onDismissed: () {
-                if (mounted) {
-                  Navigator.of(context).pop();
-                }
-              },
-            );
-          }
-        }
-      } catch (e) {
-        if (mounted) {
-          CustomDialogs.showFlushbar(context, 'Error', 'အမှားအယွင်းရှိခဲ့ပါသည်။: $e', MessageType.error);
-        }
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
-        }
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final user = auth.currentUser;
+
+    if (user == null || user.id == null || user.username == null) {
+      CustomDialogs.showAlertDialog(
+        context,
+        'အမှား',
+        'အသုံးပြုသူ အချက်အလက် မရှိပါ။',
+      );
+      setState(() => _isLoading = false);
+      return;
+    }
+    if (_selectedGroup == null ||
+        _selectedPaymentAccount == null ||
+        _selectedDate == null ||
+        _selectedTransactionType == null) {
+      CustomDialogs.showAlertDialog(
+        context,
+        'အမှား',
+        'အဖွဲ့/ငွေစာရင်း/နေ့စွဲ/အမျိုးအစား မပြည့်စုံပါ။',
+      );
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    final transferText = _transferIdController.text.trim();
+    final amountText = _amountController.text.trim().replaceAll(',', '');
+    final amountParsed = double.tryParse(amountText);
+    if (amountParsed == null) {
+      CustomDialogs.showAlertDialog(
+        context,
+        'အမှား',
+        'ငွေပမာဏ မှန်ကန်မှုမရှိပါ (ဥပမာ 2000.00)',
+      );
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    // server-side confirm (create only) – safest
+    if (widget.transaction == null) {
+      final exists = await _apiService.existsTransferId(
+        transferIdLast6: transferText,
+      );
+      if (exists) {
+        CustomDialogs.showAlertDialog(
+          context,
+          'မထည့်ရပါ',
+          'ဤ လွှဲပြောင်း ID (၆ လုံး) ကို ရှိပြီးသား ဖြစ်နေပါသည်။',
+        );
+        setState(() => _isLoading = false);
+        return;
       }
+    }
+
+    final tx = Transaction(
+      id: widget.transaction?.id,
+      transactionDate: _selectedDate!,
+      group: _selectedGroup!.id!,
+      groupName: _selectedGroup!.name,
+      paymentAccount: _selectedPaymentAccount!.id!,
+      paymentAccountName: _selectedPaymentAccount!.paymentAccountName,
+      transferIdLast6Digits: transferText,
+      amount: amountParsed,
+      transactionType: _selectedTransactionType!,
+      submittedBy: user.id!,
+      submittedByUsername: user.username,
+      status: widget.transaction?.status ?? 'pending',
+      imageUrl: widget.transaction?.imageUrl,
+      approvedByOwnerAt: widget.transaction?.approvedByOwnerAt,
+      ownerNotes: _ownerNotesController.text.isEmpty
+          ? null
+          : _ownerNotesController.text,
+      submittedAt: widget.transaction?.submittedAt ?? DateTime.now(),
+    );
+
+    try {
+      if (widget.transaction == null) {
+        await _apiService.createTransaction(
+          tx,
+          imageFile: _selectedImageFile,
+          imageBytes: _selectedImageBytes,
+          imageFileName: _selectedImageFileName,
+        );
+        if (!mounted) return;
+        CustomDialogs.showFlushbar(
+          context,
+          'Success',
+          'ငွေပေးချေမှုမှတ်တမ်းအသစ် ထည့်သွင်းပြီးပါပြီ။',
+          MessageType.success,
+          onDismissed: () {
+            if (mounted) Navigator.of(context).pop();
+          },
+        );
+      } else {
+        await _apiService.updateTransaction(
+          tx,
+          imageFile: _selectedImageFile,
+          imageBytes: _selectedImageBytes,
+          imageFileName: _selectedImageFileName,
+          clearImage: _clearExistingImage,
+        );
+        if (!mounted) return;
+        CustomDialogs.showFlushbar(
+          context,
+          'Success',
+          'ငွေပေးချေမှုမှတ်တမ်း ပြင်ဆင်ပြီးပါပြီ။',
+          MessageType.success,
+          onDismissed: () {
+            if (mounted) Navigator.of(context).pop();
+          },
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      CustomDialogs.showFlushbar(context, 'Error', '$e', MessageType.error);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final String? imageUrl = widget.transaction?.imageUrl;
+    final imageUrl = widget.transaction?.imageUrl;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.transaction == null ? 'ငွေပေးချေမှုအသစ် ထည့်မည်' : 'ငွေပေးချေမှု ပြင်ဆင်မည်'),
+        title: Text(
+          widget.transaction == null
+              ? 'ငွေပေးချေမှုအသစ် ထည့်မည်'
+              : 'ငွေပေးချေမှု ပြင်ဆင်မည်',
+        ),
         backgroundColor: Colors.blueAccent,
         foregroundColor: Colors.white,
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
+            children: [
+              // amount
               TextFormField(
                 controller: _amountController,
                 decoration: InputDecoration(
                   labelText: 'ငွေပမာဏ',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'ငွေပမာဏ ဖြည့်သွင်းပါ။';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'မှန်ကန်သော ပမာဏ ဖြည့်သွင်းပါ။';
-                  }
-                  return null;
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                validator: (v) {
+                  if ((v ?? '').isEmpty) return 'ငွေပမာဏ ဖြည့်သွင်းပါ။';
+                  return double.tryParse((v ?? '').replaceAll(',', '')) == null
+                      ? 'မှန်ကန်သော ပမာဏ ဖြည့်သွင်းပါ။'
+                      : null;
                 },
               ),
               const SizedBox(height: 15),
+
+              // transfer id
               TextFormField(
                 controller: _transferIdController,
                 decoration: InputDecoration(
                   labelText: 'လွှဲပြောင်း ID (နောက်ဆုံး ၆ လုံး)',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  suffixIcon: _isCheckingDup
+                      ? const Padding(
+                          padding: EdgeInsets.all(12.0),
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : _dupExists
+                      ? const Icon(Icons.error, color: Colors.red)
+                      : null,
                 ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'လွှဲပြောင်း ID ဖြည့်သွင်းပါ။';
-                  }
-                  return null;
-                },
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                validator: (v) => ((v ?? '').trim().length != 6)
+                    ? '၆ လုံး အတိအကျ ထည့်ပါ'
+                    : null,
               ),
+              if (_dupExists)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text(
+                    'ဤ လွှဲပြောင်း ID (၆ လုံး) ရှိပြီးသား ဖြစ်နေပါတယ်',
+                    style: TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                ),
+
               const SizedBox(height: 15),
+
+              // type
               DropdownButtonFormField<String>(
                 value: _selectedTransactionType,
                 decoration: InputDecoration(
                   labelText: 'အမျိုးအစား',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
-                items: _transactionTypes.map((type) {
-                  return DropdownMenuItem<String>(
-                    value: type,
-                    child: Text(type == 'income' ? 'ဝင်ငွေ' : 'ထွက်ငွေ'),
-                  );
-                }).toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _selectedTransactionType = value;
-                  });
-                },
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'အမျိုးအစား ရွေးချယ်ပါ။';
-                  }
-                  return null;
-                },
+                items: _transactionTypes
+                    .map(
+                      (t) => DropdownMenuItem(
+                        value: t,
+                        child: Text(t == 'income' ? 'ဝင်ငွေ' : 'ထွက်ငွေ'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) => setState(() => _selectedTransactionType = v),
+                validator: (v) =>
+                    (v == null || v.isEmpty) ? 'အမျိုးအစား ရွေးချယ်ပါ။' : null,
               ),
               const SizedBox(height: 15),
+
+              // date
               ListTile(
                 title: Text(
                   _selectedDate == null
@@ -271,34 +413,38 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                 ),
                 trailing: const Icon(Icons.calendar_today),
                 onTap: () async {
-                  final DateTime? picked = await showDatePicker(
+                  final picked = await showDatePicker(
                     context: context,
                     initialDate: _selectedDate ?? DateTime.now(),
                     firstDate: DateTime(2000),
                     lastDate: DateTime(2101),
                   );
                   if (picked != null && picked != _selectedDate) {
-                    setState(() {
-                      _selectedDate = picked;
-                    });
+                    setState(() => _selectedDate = picked);
                   }
                 },
               ),
               const SizedBox(height: 15),
+
+              // group
               FutureBuilder<List<Group>>(
                 future: _groupsFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   } else if (snapshot.hasError) {
-                    return Center(child: Text('အဖွဲ့များ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်။: ${snapshot.error}'));
+                    return Center(
+                      child: Text(
+                        'အဖွဲ့များ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်.: ${snapshot.error}',
+                      ),
+                    );
                   } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
                     return const Center(child: Text('အဖွဲ့များ မရှိသေးပါ။'));
                   } else {
-                    List<Group> groups = snapshot.data!;
+                    final groups = snapshot.data!;
                     if (widget.transaction != null && _selectedGroup == null) {
                       _selectedGroup = groups.firstWhere(
-                        (group) => group.id == widget.transaction!.group,
+                        (g) => g.id == widget.transaction!.group,
                         orElse: () => groups.first,
                       );
                     }
@@ -306,44 +452,46 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                       value: _selectedGroup,
                       decoration: InputDecoration(
                         labelText: 'အဖွဲ့',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
-                      items: groups.map((group) {
-                        return DropdownMenuItem<Group>(
-                          value: group,
-                          child: Text(group.name),
-                        );
-                      }).toList(),
-                      onChanged: (Group? newValue) {
-                        setState(() {
-                          _selectedGroup = newValue;
-                        });
-                      },
-                      validator: (value) {
-                        if (value == null) {
-                          return 'အဖွဲ့ ရွေးချယ်ပါ။';
-                        }
-                        return null;
-                      },
+                      items: groups
+                          .map(
+                            (g) =>
+                                DropdownMenuItem(value: g, child: Text(g.name)),
+                          )
+                          .toList(),
+                      onChanged: (v) => setState(() => _selectedGroup = v),
+                      validator: (v) => v == null ? 'အဖွဲ့ ရွေးချယ်ပါ။' : null,
                     );
                   }
                 },
               ),
               const SizedBox(height: 15),
+
+              // payment account
               FutureBuilder<List<PaymentAccount>>(
                 future: _paymentAccountsFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   } else if (snapshot.hasError) {
-                    return Center(child: Text('ငွေစာရင်းများ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်။: ${snapshot.error}'));
+                    return Center(
+                      child: Text(
+                        'ငွေစာရင်းများ load လုပ်ရာတွင် အမှားအယွင်းရှိပါသည်.: ${snapshot.error}',
+                      ),
+                    );
                   } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                    return const Center(child: Text('ငွေစာရင်းများ မရှိသေးပါ။'));
+                    return const Center(
+                      child: Text('ငွေစာရင်းများ မရှိသေးပါ။'),
+                    );
                   } else {
-                    List<PaymentAccount> accounts = snapshot.data!;
-                    if (widget.transaction != null && _selectedPaymentAccount == null) {
+                    final accounts = snapshot.data!;
+                    if (widget.transaction != null &&
+                        _selectedPaymentAccount == null) {
                       _selectedPaymentAccount = accounts.firstWhere(
-                        (account) => account.id == widget.transaction!.paymentAccount,
+                        (a) => a.id == widget.transaction!.paymentAccount,
                         orElse: () => accounts.first,
                       );
                     }
@@ -351,41 +499,62 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                       value: _selectedPaymentAccount,
                       decoration: InputDecoration(
                         labelText: 'ငွေစာရင်း',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
-                      items: accounts.map((account) {
-                        return DropdownMenuItem<PaymentAccount>(
-                          value: account,
-                          child: Text(account.paymentAccountName),
-                        );
-                      }).toList(),
-                      onChanged: (PaymentAccount? newValue) {
-                        setState(() {
-                          _selectedPaymentAccount = newValue;
-                        });
-                      },
-                      validator: (value) {
-                        if (value == null) {
-                          return 'ငွေစာရင်း ရွေးချယ်ပါ။';
-                        }
-                        return null;
-                      },
+                      items: accounts
+                          .map(
+                            (a) => DropdownMenuItem(
+                              value: a,
+                              child: Text(a.paymentAccountName),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (v) =>
+                          setState(() => _selectedPaymentAccount = v),
+                      validator: (v) =>
+                          v == null ? 'ငွေစာရင်း ရွေးချယ်ပါ။' : null,
                     );
                   }
                 },
               ),
+
               const SizedBox(height: 20),
-              // Image Section
+
+              // image
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('ပုံ (ရှိလျှင်)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'ပုံ (ရှိလျှင်)',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
                   const SizedBox(height: 10),
-                  if (_selectedImage != null)
+                  if (kIsWeb && _selectedImageBytes != null)
                     Stack(
                       alignment: Alignment.topRight,
                       children: [
-                        Image.file(_selectedImage!, height: 150, fit: BoxFit.cover),
+                        Image.memory(
+                          _selectedImageBytes!,
+                          height: 150,
+                          fit: BoxFit.cover,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.cancel, color: Colors.red),
+                          onPressed: _clearImage,
+                        ),
+                      ],
+                    )
+                  else if (!kIsWeb && _selectedImageFile != null)
+                    Stack(
+                      alignment: Alignment.topRight,
+                      children: [
+                        Image.file(
+                          _selectedImageFile!,
+                          height: 150,
+                          fit: BoxFit.cover,
+                        ),
                         IconButton(
                           icon: const Icon(Icons.cancel, color: Colors.red),
                           onPressed: _clearImage,
@@ -398,7 +567,11 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                         Stack(
                           alignment: Alignment.topRight,
                           children: [
-                            Image.network(_buildImageUrl(imageUrl), height: 150, fit: BoxFit.cover),
+                            Image.network(
+                              _buildImageUrl(imageUrl),
+                              height: 150,
+                              fit: BoxFit.cover,
+                            ),
                             IconButton(
                               icon: const Icon(Icons.cancel, color: Colors.red),
                               onPressed: _clearImage,
@@ -408,12 +581,17 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                         const SizedBox(height: 10),
                         ElevatedButton.icon(
                           onPressed: _clearImage,
-                          icon: const Icon(Icons.delete_forever, color: Colors.white),
+                          icon: const Icon(
+                            Icons.delete_forever,
+                            color: Colors.white,
+                          ),
                           label: const Text('ပုံ ဖျက်မည်'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.red,
                             foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
                           ),
                         ),
                       ],
@@ -426,28 +604,37 @@ class _TransactionFormScreenState extends State<TransactionFormScreen> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.blueGrey,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                     ),
                 ],
               ),
+
               const SizedBox(height: 30),
-              _isLoading
-                  ? const CircularProgressIndicator()
-                  : ElevatedButton(
-                      onPressed: _saveTransaction,
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 50),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        backgroundColor: Colors.blueAccent,
-                        foregroundColor: Colors.white,
-                        elevation: 5,
-                      ),
-                      child: Text(
-                        widget.transaction == null ? 'မှတ်တမ်း ထည့်မည်' : 'မှတ်တမ်း ပြင်ဆင်မည်',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ),
+
+              ElevatedButton(
+                onPressed: (_isLoading || _dupExists) ? null : _saveTransaction,
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 50),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  backgroundColor: Colors.blueAccent,
+                  foregroundColor: Colors.white,
+                  elevation: 5,
+                ),
+                child: Text(
+                  widget.transaction == null
+                      ? 'မှတ်တမ်း ထည့်မည်'
+                      : 'မှတ်တမ်း ပြင်ဆင်မည်',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
             ],
           ),
         ),

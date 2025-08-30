@@ -2,26 +2,24 @@ import 'package:intl/intl.dart';
 
 class Transaction {
   final int? id;
-  final int submittedBy;
-  final String submittedByUsername; // For display purposes
   final DateTime transactionDate;
   final int group;
-  final String groupName; // For display purposes
+  final String groupName;
   final int paymentAccount;
-  final String paymentAccountName; // For display purposes
+  final String paymentAccountName;
   final String transferIdLast6Digits;
-  final double amount;
-  final String transactionType; // 'income' or 'expense'
-  final String status; // 'pending', 'approved', 'rejected'
+  final double amount; // <-- num/string ဘယ်လိုပဲလာလာ double သို့ map
+  final String transactionType;
+  final int submittedBy;
+  final String? submittedByUsername;
+  final String status;
   final String? imageUrl;
+  final DateTime submittedAt;
   final DateTime? approvedByOwnerAt;
   final String? ownerNotes;
-  final DateTime submittedAt; // Add submittedAt field
 
   Transaction({
     this.id,
-    required this.submittedBy,
-    required this.submittedByUsername,
     required this.transactionDate,
     required this.group,
     required this.groupName,
@@ -30,111 +28,82 @@ class Transaction {
     required this.transferIdLast6Digits,
     required this.amount,
     required this.transactionType,
+    required this.submittedBy,
+    this.submittedByUsername,
     required this.status,
     this.imageUrl,
+    required this.submittedAt,
     this.approvedByOwnerAt,
     this.ownerNotes,
-    required this.submittedAt, // Make it required
   });
 
-  // Helper getter for display
-  String get transactionTypeDisplay {
-    return transactionType == 'income' ? 'ဝင်ငွေ' : 'ထွက်ငွေ';
-  }
-
-  String get statusDisplay {
-    switch (status) {
-      case 'pending':
-        return 'စောင့်ဆိုင်းဆဲ';
-      case 'approved':
-        return 'အတည်ပြုပြီး';
-      case 'rejected':
-        return 'ပယ်ချပြီး';
-      default:
-        return status;
+  // ---------- helpers ----------
+  static double _asDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    if (v is String) {
+      // "20,000.00" လို format တွေလည်း ကိုင်နိုင်အောင်
+      final cleaned = v.replaceAll(',', '').trim();
+      return double.tryParse(cleaned) ?? 0.0;
     }
+    return 0.0;
   }
 
+  static int _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is String) return int.tryParse(v) ?? 0;
+    if (v is num) return v.toInt();
+    return 0;
+  }
+
+  static DateTime? _asDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is String && v.isEmpty) return null;
+    return DateTime.parse(v as String);
+  }
+
+  // ---------- JSON ----------
   factory Transaction.fromJson(Map<String, dynamic> json) {
     return Transaction(
-      id: json['id'],
-      submittedBy: json['submitted_by'],
-      submittedByUsername: json['submitted_by_username'],
-      transactionDate: DateTime.parse(json['transaction_date']),
-      group: json['group'],
-      groupName: json['group_name'],
-      paymentAccount: json['payment_account'],
-      paymentAccountName: json['payment_account_name'],
-      transferIdLast6Digits: json['transfer_id_last_6_digits'],
-      amount: (json['amount'] as num).toDouble(),
-      transactionType: json['transaction_type'],
-      status: json['status'],
-      imageUrl: json['image_url'],
-      approvedByOwnerAt: json['approved_by_owner_at'] != null
-          ? DateTime.parse(json['approved_by_owner_at'])
-          : null,
-      ownerNotes: json['owner_notes'],
-      submittedAt: DateTime.parse(json['submitted_at']), // Parse submitted_at
+      id: json['id'] as int?,
+      transactionDate: DateTime.parse(json['transaction_date'] as String),
+      group: _asInt(json['group']),
+      groupName: (json['group_name'] ?? '') as String,
+      paymentAccount: _asInt(json['payment_account']),
+      paymentAccountName: (json['payment_account_name'] ?? '') as String,
+      transferIdLast6Digits:
+          (json['transfer_id_last_6_digits'] ?? '') as String,
+      amount: _asDouble(json['amount']), // <-- FIX
+      transactionType: (json['transaction_type'] ?? '') as String,
+      submittedBy: _asInt(json['submitted_by']),
+      submittedByUsername: json['submitted_by_username']?.toString(),
+      status: (json['status'] ?? 'pending').toString(),
+      imageUrl: json['image']?.toString(),
+      submittedAt: DateTime.parse(json['submitted_at'] as String),
+      approvedByOwnerAt: _asDateTime(json['approved_by_owner_at']),
+      ownerNotes: json['owner_notes']?.toString(),
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
       'id': id,
-      'submitted_by': submittedBy,
-      'submitted_by_username': submittedByUsername,
-      'transaction_date': transactionDate.toIso8601String(),
+      'transaction_date': DateFormat('yyyy-MM-dd').format(transactionDate),
       'group': group,
       'group_name': groupName,
       'payment_account': paymentAccount,
       'payment_account_name': paymentAccountName,
       'transfer_id_last_6_digits': transferIdLast6Digits,
-      'amount': amount,
+      // Multipart POST/PUT တွေက field တွေကို string အဖြစ်ပို့ရတာများ—string အဖြစ် serialize
+      'amount': amount.toString(),
       'transaction_type': transactionType,
+      'submitted_by': submittedBy,
+      'submitted_by_username': submittedByUsername,
       'status': status,
-      'image_url': imageUrl,
+      'image': imageUrl,
+      'submitted_at': submittedAt.toIso8601String(),
       'approved_by_owner_at': approvedByOwnerAt?.toIso8601String(),
       'owner_notes': ownerNotes,
-      'submitted_at': submittedAt.toIso8601String(), // Include submitted_at
     };
-  }
-
-  // Helper method to create a copy with updated fields
-  Transaction copyWith({
-    int? id,
-    int? submittedBy,
-    String? submittedByUsername,
-    DateTime? transactionDate,
-    int? group,
-    String? groupName,
-    int? paymentAccount,
-    String? paymentAccountName,
-    String? transferIdLast6Digits,
-    double? amount,
-    String? transactionType,
-    String? status,
-    String? imageUrl,
-    DateTime? approvedByOwnerAt,
-    String? ownerNotes,
-    DateTime? submittedAt,
-  }) {
-    return Transaction(
-      id: id ?? this.id,
-      submittedBy: submittedBy ?? this.submittedBy,
-      submittedByUsername: submittedByUsername ?? this.submittedByUsername,
-      transactionDate: transactionDate ?? this.transactionDate,
-      group: group ?? this.group,
-      groupName: groupName ?? this.groupName,
-      paymentAccount: paymentAccount ?? this.paymentAccount,
-      paymentAccountName: paymentAccountName ?? this.paymentAccountName,
-      transferIdLast6Digits: transferIdLast6Digits ?? this.transferIdLast6Digits,
-      amount: amount ?? this.amount,
-      transactionType: transactionType ?? this.transactionType,
-      status: status ?? this.status,
-      imageUrl: imageUrl ?? this.imageUrl,
-      approvedByOwnerAt: approvedByOwnerAt ?? this.approvedByOwnerAt,
-      ownerNotes: ownerNotes ?? this.ownerNotes,
-      submittedAt: submittedAt ?? this.submittedAt,
-    );
   }
 }
