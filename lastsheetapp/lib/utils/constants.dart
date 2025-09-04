@@ -35,8 +35,14 @@ class Constants {
   static final String usersUrl = '$baseUrl/auth/users/';
   static final String transactionsUrl = '$baseUrl/sheets/transactions/';
   static final String auditEntriesUrl = '$baseUrl/sheets/audit-entries/';
-  static final String auditSummaryUrl = '$baseUrl/sheets/audit-summary/';
-  static final String changePasswordUrl = '$baseUrl/api/auth/password/change/';
+  static final String auditEntriesSummaryUrl =
+      '$baseUrl/sheets/audit-entries/summary/';
+  static final String changePasswordUrl = '$baseUrl/auth/users/set_password/';
   static String userSetPasswordUrl(int id) =>
-      '$baseUrl/api/auth/users/$id/password/';
+      '$baseUrl/auth/users/$id/password/';
+  static final String setPasswordUrl = '$baseUrl/auth/users/set_password/';
+
+  static final String resetPasswordUrl = '$baseUrl/auth/users/reset_password/';
+  static final String resetPasswordConfirmUrl =
+      '$baseUrl/auth/users/reset_password_confirm/';
 }

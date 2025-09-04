@@ -197,22 +197,36 @@ class AuditEntrySerializer(serializers.ModelSerializer):
         validated_data['auditor'] = self.context['request'].user
         return super().create(validated_data)
 
+# class AuditSummarySerializer(serializers.Serializer):
+#     total_income = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     total_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     balance = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     audited_income = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     audited_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     audited_balance = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     unapproved_income = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     unapproved_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     unapproved_balance = serializers.DecimalField(max_digits=10, decimal_places=2)
+#     last_updated = serializers.DateTimeField()
+
+#     def to_representation(self, instance):
+#         data = super().to_representation(instance)
+#         return data
+
 class AuditSummarySerializer(serializers.Serializer):
-    total_income = serializers.DecimalField(max_digits=10, decimal_places=2)
-    total_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
-    balance = serializers.DecimalField(max_digits=10, decimal_places=2)
-    audited_income = serializers.DecimalField(max_digits=10, decimal_places=2)
-    audited_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
-    audited_balance = serializers.DecimalField(max_digits=10, decimal_places=2)
-    unapproved_income = serializers.DecimalField(max_digits=10, decimal_places=2)
-    unapproved_expense = serializers.DecimalField(max_digits=10, decimal_places=2)
-    unapproved_balance = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total_income = serializers.DecimalField(max_digits=18, decimal_places=2)
+    total_expense = serializers.DecimalField(max_digits=18, decimal_places=2)
+    balance = serializers.DecimalField(max_digits=18, decimal_places=2)
+
+    audited_income = serializers.DecimalField(max_digits=18, decimal_places=2)
+    audited_expense = serializers.DecimalField(max_digits=18, decimal_places=2)
+    audited_balance = serializers.DecimalField(max_digits=18, decimal_places=2)
+
+    unapproved_income = serializers.DecimalField(max_digits=18, decimal_places=2)
+    unapproved_expense = serializers.DecimalField(max_digits=18, decimal_places=2)
+    unapproved_balance = serializers.DecimalField(max_digits=18, decimal_places=2)
+
     last_updated = serializers.DateTimeField()
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return data
-
 
 
 

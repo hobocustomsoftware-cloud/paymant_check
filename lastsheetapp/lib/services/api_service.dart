@@ -268,6 +268,37 @@ class ApiService {
     }
   }
 
+  Future<List<Transaction>> fetchTransactionsFiltered({
+    String? last6,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+    String? status, // 'pending' for owner review
+  }) async {
+    final qp = <String, String>{};
+    if (last6 != null && last6.length == 6)
+      qp['transfer_id_last_6_digits'] = last6;
+    if (dateFrom != null)
+      qp['transaction_date_after'] = DateFormat('yyyy-MM-dd').format(dateFrom);
+    if (dateTo != null)
+      qp['transaction_date_before'] = DateFormat('yyyy-MM-dd').format(dateTo);
+    if (status != null) qp['status'] = status;
+
+    final uri = Uri.parse(
+      Constants.transactionsUrl,
+    ).replace(queryParameters: qp);
+    final res = await http.get(uri, headers: await _getHeaders());
+    final body = utf8.decode(res.bodyBytes);
+    if (res.statusCode != 200) throw Exception('Filter fetch failed: $body');
+
+    final decoded = jsonDecode(body);
+    final list = (decoded is Map && decoded['results'] is List)
+        ? decoded['results'] as List
+        : (decoded is List ? decoded : <dynamic>[]);
+    return list
+        .map((e) => Transaction.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<List<Transaction>> searchTransactionsByLast6(String last6) async {
     final uri = Uri.parse(
       '${Constants.transactionsUrl}?transfer_id_last_6_digits=$last6',
@@ -398,40 +429,41 @@ class ApiService {
   }
 
   // --- Transaction Actions (Approve/Reject) ---
-  Future<Transaction> approveTransaction(
-    int transactionId, {
-    String? ownerNotes,
-  }) async {
-    final res = await http.patch(
-      // <- patch
-      Uri.parse('${Constants.transactionsUrl}$transactionId/approve/'),
-      headers: await _getHeaders(), // Content-Type: application/json ရှိတယ်
-      body: jsonEncode({'owner_notes': ownerNotes}),
-    );
+  Future<Transaction> approveTransaction(int id, {String? ownerNotes}) async {
+    final uri = Uri.parse('${Constants.transactionsUrl}$id/approve/');
+    final headers = await _getHeaders();
+    final body = jsonEncode({'owner_notes': ownerNotes});
+    var res = await http.patch(uri, headers: headers, body: body);
+    if (res.statusCode == 405)
+      res = await http.post(uri, headers: headers, body: body);
     if (res.statusCode == 200) {
       return Transaction.fromJson(jsonDecode(utf8.decode(res.bodyBytes)));
     }
-    throw Exception(
-      'Failed to approve transaction: ${utf8.decode(res.bodyBytes)}',
-    );
+    throw Exception('Failed to approve: ${utf8.decode(res.bodyBytes)}');
   }
 
-  Future<Transaction> rejectTransaction(
-    int transactionId, {
-    String? ownerNotes,
-  }) async {
-    final res = await http.patch(
-      // <- patch
-      Uri.parse('${Constants.transactionsUrl}$transactionId/reject/'),
-      headers: await _getHeaders(),
-      body: jsonEncode({'owner_notes': ownerNotes}),
-    );
+  Future<Transaction> rejectTransaction(int id, {String? ownerNotes}) async {
+    final uri = Uri.parse('${Constants.transactionsUrl}$id/reject/');
+    final headers = await _getHeaders();
+    final body = jsonEncode({'owner_notes': ownerNotes});
+    var res = await http.patch(uri, headers: headers, body: body);
+    if (res.statusCode == 405)
+      res = await http.post(uri, headers: headers, body: body);
     if (res.statusCode == 200) {
       return Transaction.fromJson(jsonDecode(utf8.decode(res.bodyBytes)));
     }
-    throw Exception(
-      'Failed to reject transaction: ${utf8.decode(res.bodyBytes)}',
-    );
+    throw Exception('Failed to reject: ${utf8.decode(res.bodyBytes)}');
+  }
+
+  Future<Transaction> reSubmitTransaction(int id) async {
+    final uri = Uri.parse('${Constants.transactionsUrl}$id/re_submit/');
+    final res = await http.post(uri, headers: await _getHeaders());
+    final body = utf8.decode(res.bodyBytes);
+
+    if (res.statusCode == 200) {
+      return Transaction.fromJson(jsonDecode(body) as Map<String, dynamic>);
+    }
+    throw Exception('Re-submit failed: $body');
   }
 
   // ---- Duplicate check (GLOBAL by 6 digits only) ----
@@ -535,19 +567,38 @@ class ApiService {
   }
 
   // --- Audit Summary (Owner Only) ---
-  Future<AuditSummary> fetchAuditSummary() async {
-    final response = await http.get(
-      Uri.parse(Constants.auditSummaryUrl),
-      headers: await _getHeaders(),
-    );
-    if (response.statusCode == 200) {
-      return AuditSummary.fromJson(jsonDecode(utf8.decode(response.bodyBytes)));
-    } else {
-      throw Exception(
-        'Failed to load audit summary: ${jsonDecode(utf8.decode(response.bodyBytes))}',
-      );
-    }
-  }
+  // Future<AuditSummary> fetchAuditSummary() async {
+  //   final response = await http.get(
+  //     Uri.parse(Constants.auditSummaryUrl),
+  //     headers: await _getHeaders(),
+  //   );
+  //   if (response.statusCode == 200) {
+  //     return AuditSummary.fromJson(jsonDecode(utf8.decode(response.bodyBytes)));
+  //   } else {
+  //     throw Exception(
+  //       'Failed to load audit summary: ${jsonDecode(utf8.decode(response.bodyBytes))}',
+  //     );
+  //   }
+  // }
+
+  // Future<Map<String, dynamic>> fetchAuditSummary({
+  //   String? start,
+  //   String? end,
+  // }) async {
+  //   final qp = <String, String>{};
+  //   if (start != null && start.isNotEmpty) qp['start'] = start; // 'YYYY-MM-DD'
+  //   if (end != null && end.isNotEmpty) qp['end'] = end;
+
+  //   final uri = Uri.parse(
+  //     Constants.auditEntriesSummaryUrl,
+  //   ).replace(queryParameters: qp);
+  //   final res = await http.get(uri, headers: await _getHeaders());
+  //   final body = utf8.decode(res.bodyBytes);
+  //   if (res.statusCode != 200) {
+  //     throw Exception('Audit summary failed: $body');
+  //   }
+  //   return jsonDecode(body) as Map<String, dynamic>;
+  // }
 
   // --- User Management (Auditors) ---
   Future<List<User>> fetchAuditors() async {
@@ -636,34 +687,24 @@ class ApiService {
   }
 
   /// User self-change password (requires old_password). Returns new token.
-  Future<String> changePassword({
-    required String oldPassword,
+  Future<void> changePasswordDjoser({
+    required String currentPassword,
     required String newPassword,
-    required String newPassword2,
   }) async {
-    final res = await http.post(
-      Uri.parse(Constants.changePasswordUrl),
+    final r = await http.post(
+      Uri.parse(Constants.setPasswordUrl),
       headers: await _getHeaders(),
       body: jsonEncode({
-        'old_password': oldPassword,
+        'current_password': currentPassword,
         'new_password': newPassword,
-        'new_password2': newPassword2,
       }),
     );
-
-    final body = utf8.decode(res.bodyBytes);
-    if (res.statusCode == 200) {
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      final newToken = data['auth_token'] as String?;
-      if (newToken != null && newToken.isNotEmpty) {
-        // rotate token locally
-        await _storage.write(key: 'auth_token', value: newToken);
-      }
-      return newToken ?? '';
-    } else {
-      // surface server-side validation errors
-      throw Exception('Change password failed: $body');
-    }
+    final body = utf8.decode(r.bodyBytes);
+    if (r.statusCode == 204) return;
+    // 👇 ပိုခွဲရှင်းပြီး error ပြ
+    throw Exception(
+      'Change password failed: ${body.isEmpty ? r.statusCode : body}',
+    );
   }
 
   /// Owner/Admin set password for user <id>. No token return.
@@ -686,5 +727,98 @@ class ApiService {
         'Set user password failed: ${utf8.decode(res.bodyBytes)}',
       );
     }
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAuditEntrySummary({
+    required String period, // daily|weekly|monthly|yearly
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    final qp = <String, String>{'period': period};
+    final fmt = DateFormat('yyyy-MM-dd');
+    if (start != null) qp['start'] = fmt.format(start);
+    if (end != null) qp['end'] = fmt.format(end);
+
+    final uri = Uri.parse(
+      '${Constants.auditEntriesUrl}summary/',
+    ).replace(queryParameters: qp);
+    final res = await http.get(uri, headers: await _getHeaders());
+    final body = utf8.decode(res.bodyBytes);
+    if (res.statusCode != 200) {
+      throw Exception('Audit summary failed: $body');
+    }
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    final List results = decoded['results'] as List? ?? [];
+    return results.cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> fetchAuditSummary({
+    String period = 'daily', // 'daily' | 'weekly' | 'monthly' | 'yearly'
+    String? start, // 'YYYY-MM-DD'
+    String? end, // 'YYYY-MM-DD'
+  }) async {
+    final qp = <String, String>{'period': period};
+    if (start != null && start.isNotEmpty) qp['start'] = start;
+    if (end != null && end.isNotEmpty) qp['end'] = end;
+
+    final uri = Uri.parse(
+      Constants.auditEntriesSummaryUrl,
+    ).replace(queryParameters: qp);
+
+    final res = await http.get(uri, headers: await _getHeaders());
+    final body = utf8.decode(res.bodyBytes);
+
+    if (res.statusCode != 200) {
+      // helpful debug
+      throw Exception(
+        'fetchAuditSummary failed '
+        '(status: ${res.statusCode}) body: $body',
+      );
+    }
+    final data = jsonDecode(body);
+    if (data is Map<String, dynamic>) return data;
+    throw Exception('Unexpected summary response: $data');
+  }
+
+  Future<void> requestPasswordReset(String email) async {
+    final res = await http.post(
+      Uri.parse(Constants.resetPasswordUrl),
+      headers: await _getHeaders(includeAuth: false), // no auth
+      body: jsonEncode({'email': email}),
+    );
+    if (res.statusCode != 204) {
+      throw Exception('Reset request failed: ${utf8.decode(res.bodyBytes)}');
+    }
+  }
+
+  Future<void> confirmPasswordReset({
+    required String uid,
+    required String token,
+    required String newPassword,
+  }) async {
+    final res = await http.post(
+      Uri.parse(Constants.resetPasswordConfirmUrl),
+      headers: await _getHeaders(includeAuth: false),
+      body: jsonEncode({
+        'uid': uid,
+        'token': token,
+        'new_password': newPassword,
+      }),
+    );
+    if (res.statusCode != 204) {
+      throw Exception('Reset confirm failed: ${utf8.decode(res.bodyBytes)}');
+    }
+  }
+
+  Future<bool> verifyCurrentPasswordNoPersist({
+    required String username,
+    required String password,
+  }) async {
+    final r = await http.post(
+      Uri.parse('${Constants.loginUrl}token/login/'),
+      headers: await _getHeaders(includeAuth: false),
+      body: jsonEncode({'username': username, 'password': password}),
+    );
+    return r.statusCode == 200;
   }
 }

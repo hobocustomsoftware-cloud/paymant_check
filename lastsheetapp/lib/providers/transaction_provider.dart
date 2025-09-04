@@ -23,7 +23,9 @@ class TransactionProvider with ChangeNotifier {
 
     try {
       _transactions = await _apiService.fetchTransactions();
-      _transactions.sort((a, b) => b.submittedAt.compareTo(a.submittedAt)); // Sort by submittedAt descending
+      _transactions.sort(
+        (a, b) => b.submittedAt.compareTo(a.submittedAt),
+      ); // Sort by submittedAt descending
     } catch (e) {
       _errorMessage = e.toString();
     } finally {
@@ -33,27 +35,36 @@ class TransactionProvider with ChangeNotifier {
   }
 
   // Update an existing transaction
-  Future<void> updateTransaction(Transaction updatedTransaction, {File? imageFile, bool clearImage = false}) async {
+  Future<void> updateTransaction(
+    Transaction updatedTransaction, {
+    File? imageFile,
+    bool clearImage = false,
+  }) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      final Transaction responseTransaction = await _apiService.updateTransaction(
-        updatedTransaction,
-        imageFile: imageFile,
-        clearImage: clearImage,
-      );
+      final Transaction responseTransaction = await _apiService
+          .updateTransaction(
+            updatedTransaction,
+            imageFile: imageFile,
+            clearImage: clearImage,
+          );
 
       // Update the list with the new transaction data
-      final index = _transactions.indexWhere((t) => t.id == responseTransaction.id);
+      final index = _transactions.indexWhere(
+        (t) => t.id == responseTransaction.id,
+      );
       if (index != -1) {
         _transactions[index] = responseTransaction;
       } else {
         // If for some reason it's not in the list (e.g., new transaction that was created and then updated)
         _transactions.add(responseTransaction);
       }
-      _transactions.sort((a, b) => b.submittedAt.compareTo(a.submittedAt)); // Re-sort
+      _transactions.sort(
+        (a, b) => b.submittedAt.compareTo(a.submittedAt),
+      ); // Re-sort
     } catch (e) {
       _errorMessage = e.toString();
     } finally {
@@ -63,15 +74,21 @@ class TransactionProvider with ChangeNotifier {
   }
 
   // Create a new transaction
-  Future<void> createTransaction(Transaction newTransaction, {File? imageFile}) async {
+  Future<void> createTransaction(
+    Transaction newTransaction, {
+    File? imageFile,
+  }) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      final Transaction responseTransaction = await _apiService.createTransaction(newTransaction, imageFile: imageFile);
+      final Transaction responseTransaction = await _apiService
+          .createTransaction(newTransaction, imageFile: imageFile);
       _transactions.add(responseTransaction);
-      _transactions.sort((a, b) => b.submittedAt.compareTo(a.submittedAt)); // Re-sort
+      _transactions.sort(
+        (a, b) => b.submittedAt.compareTo(a.submittedAt),
+      ); // Re-sort
     } catch (e) {
       _errorMessage = e.toString();
     } finally {
@@ -94,6 +111,15 @@ class TransactionProvider with ChangeNotifier {
     } finally {
       _isLoading = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> reSubmitTransaction(int id) async {
+    try {
+      await _apiService.reSubmitTransaction(id);
+      await fetchTransactions(); // local state refresh
+    } catch (e) {
+      rethrow;
     }
   }
 }

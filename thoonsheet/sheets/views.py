@@ -3,6 +3,7 @@
 from decimal import Decimal
 from django.forms import DecimalField
 from django.shortcuts import get_object_or_404
+import django_filters
 from rest_framework import viewsets, status, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -32,24 +33,25 @@ from djoser.views import TokenCreateView
 from rest_framework.authtoken.models import Token
 from rest_framework.serializers import ModelSerializer # For CustomUserSerializer if needed
 
-# CustomUserSerializer (သင့် User model ရဲ့ fields တွေနဲ့ ကိုက်ညီအောင် ပြင်ဆင်ပါ)
-# ဒီ UserSerializer က သင့် sheets/serializers.py ထဲက UserSerializer နဲ့ တူညီသင့်ပါတယ်။
-# အကယ်၍ sheets/serializers.py ထဲမှာ UserSerializer မရှိသေးရင် အောက်က code ကို ထည့်ပါ။
-# ရှိနှင့်ပြီးသားဆိုရင် ဒီနေရာမှာ ထပ်ထည့်စရာမလိုဘဲ အပေါ်က import ကိုပဲ သုံးပါ။
-# class CustomUserSerializer(ModelSerializer):
-#     class Meta:
-#         model = User
-#         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'user_type'] # user_type field ပါဝင်ရပါမည်။
+from django.db.models.functions import Coalesce
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 
 
-# Djoser ရဲ့ TokenCreateView ကို Override လုပ်ပြီး user data ကိုပါ ထည့်သွင်းရန်
+
+class IsOwnerOrAuditor(permissions.BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(u and u.is_authenticated and getattr(u, 'user_type', None) in ('owner', 'auditor'))
+
+
 class CustomTokenCreateView(TokenCreateView):
     # serializer_class = djoser.serializers.TokenCreateSerializer # Default ကို သုံးပါ
     
     def _action(self, serializer):
         # djoser ရဲ့ default _action method ကို ခေါ်ပြီး token response ကို ရယူပါ။
         token_response = super()._action(serializer) 
-        token_key = token_response.data['auth_token'] # djoser က 'auth_token' key နဲ့ ပြန်ပေးပါတယ်။
+        token_key = token_response.data['auth_token'] # type: ignore # djoser က 'auth_token' key နဲ့ ပြန်ပေးပါတယ်။
 
         user = serializer.user
         # UserSerializer ကို အသုံးပြုပြီး user object ကို serialize လုပ်ပါ။
@@ -74,7 +76,7 @@ class UserViewSet(viewsets.ModelViewSet):
             self.permission_classes = [IsAuthenticated]
             return [permission() for permission in self.permission_classes]
 
-        if user.user_type == 'owner':
+        if user.user_type == 'owner': # type: ignore
             self.permission_classes = [IsOwnerUser]
         else:
             self.permission_classes = [permissions.IsAdminUser]
@@ -92,7 +94,7 @@ class UserViewSet(viewsets.ModelViewSet):
             return User.objects.none()
 
     def perform_create(self, serializer):
-        user_type = self.request.data.get('user_type', 'auditor')
+        user_type = self.request.data.get('user_type', 'auditor') # type: ignore
         if self.request.user.user_type == 'owner':
             if user_type == 'owner':
                 raise serializers.ValidationError({"detail": "Owner cannot create another owner user."})
@@ -169,9 +171,9 @@ class PaymentAccountViewSet(viewsets.ModelViewSet):
             self.permission_classes = [IsAuthenticated]
             return [permission() for permission in self.permission_classes]
 
-        if user.user_type == 'owner':
+        if user.user_type == 'owner': # type: ignore
             self.permission_classes = [IsOwnerUser]
-        elif user.user_type == 'auditor':
+        elif user.user_type == 'auditor': # type: ignore
             self.permission_classes = [permissions.IsAuthenticatedOrReadOnly]
         else:
             self.permission_classes = [permissions.IsAuthenticated]
@@ -181,6 +183,24 @@ class PaymentAccountViewSet(viewsets.ModelViewSet):
         serializer.save(owner=self.request.user)
 
 # Transaction ViewSet (Owner: List, Edit, Delete / Auditor: Create, List, Edit (rejected only))
+
+class TransactionFilter(django_filters.FilterSet):
+    # /transactions/?transaction_date_after=YYYY-MM-DD&transaction_date_before=YYYY-MM-DD
+    transaction_date = django_filters.DateFromToRangeFilter(
+        field_name='transaction_date', label='Transaction Date Range'
+    )
+    transfer_id_last_6_digits = django_filters.CharFilter(max_length=6)
+
+    class Meta:
+        model = Transaction
+        fields = [
+            'transaction_date', 'transfer_id_last_6_digits',
+            'status', 'transaction_type', 'group', 'payment_account', 'submitted_by'
+        ]
+
+
+
+
 class TransactionViewSet(viewsets.ModelViewSet):
     queryset = Transaction.objects.all().order_by('-submitted_at')
     serializer_class = TransactionSerializer
@@ -193,6 +213,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
                         'submitted_by', 'payment_account', 'group', 'transaction_date']
     ordering_fields = ['submitted_at', 'transaction_date', 'amount']
     search_fields = ['transfer_id_last_6_digits', 'owner_notes']
+    filterset_class = TransactionFilter
 
     def get_permissions(self):
         user = self.request.user
@@ -250,16 +271,16 @@ class TransactionViewSet(viewsets.ModelViewSet):
             serializer.save(status='pending', approved_by_owner_at=None, owner_notes=None)
             return
 
-        raise permissions.PermissionDenied("You do not have permission to update this transaction.")
+        raise permissions.PermissionDenied("You do not have permission to update this transaction.") # type: ignore
 
     # -------- Owner-only listing shortcuts --------
-    @action(detail=False, methods=['get'])
+    @action(detail=True, methods=['get'])
     def pending(self, request):
         pending_transactions = self.get_queryset().filter(status='pending')
         ser = self.get_serializer(pending_transactions, many=True)
         return Response(ser.data)
 
-    @action(detail=False, methods=['get'])
+    @action(detail=True, methods=['get'])
     def rejected(self, request, pk=None):
         rejected_transactions = self.get_queryset().filter(status='rejected')
         ser = self.get_serializer(rejected_transactions, many=True)
@@ -314,70 +335,72 @@ class TransactionViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(tx).data, status=status.HTTP_200_OK)
 
     # -------- Summary (owner) --------
-    @action(detail=False, methods=['get'])
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='summary',
+        permission_classes=[IsOwnerOrAuditor],          # Owner/Auditor နှစ်ဦးစလုံးရှုနိုင်
+    )
     def summary(self, request):
-        total_income = Transaction.objects.filter(
-            transaction_type='income', status='approved'
-        ).aggregate(sum_amount=Coalesce(Sum('amount'), Decimal('0.00')))['sum_amount']
+        # Query params
+        period = (request.query_params.get('period') or 'daily').lower()
+        start = request.query_params.get('start')
+        end = request.query_params.get('end')
 
-        total_expense = Transaction.objects.filter(
-            transaction_type='expense', status='approved'
-        ).aggregate(sum_amount=Coalesce(Sum('amount'), Decimal('0.00')))['sum_amount']
+        # သင့် model ရဲ့ ရက်စွဲ field အမည်ကို အတိအကျ ထည့်ပါ
+        date_field = 'entry_date'  # <-- အကယ်၍ 'created_at' ဆိုရင် ဒီလိုပြောင်း
 
-        group_summary_data = Transaction.objects.filter(status='approved') \
-            .values('group__name', 'group__target_amount') \
+        qs = self.get_queryset()
+        if start:
+            d = parse_date(start)
+            if d:
+                qs = qs.filter(**{f'{date_field}__gte': d})
+        if end:
+            d = parse_date(end)
+            if d:
+                qs = qs.filter(**{f'{date_field}__lte': d})
+
+        # Grouping period
+        if period == 'weekly':
+            trunc = TruncWeek(date_field)
+        elif period == 'monthly':
+            trunc = TruncMonth(date_field)
+        elif period == 'yearly':
+            trunc = TruncYear(date_field)
+        else:
+            trunc = TruncDay(date_field)
+
+        data = (qs
+            .annotate(bucket=trunc)
+            .values('bucket')
             .annotate(
-                total_income=Sum(
-                    Case(
-                        When(transaction_type='income', then=F('amount')),
-                        default=Decimal('0.00'),
-                        output_field=DecimalField()
-                    )
-                ),
-                total_expense=Sum(
-                    Case(
-                        When(transaction_type='expense', then=F('amount')),
-                        default=Decimal('0.00'),
-                        output_field=DecimalField()
-                    )
-                ),
-                balance=Sum(
-                    Case(
-                        When(transaction_type='income', then=F('amount')),
-                        When(transaction_type='expense', then=-F('amount')),
-                        default=Decimal('0.00'),
-                        output_field=DecimalField()
-                    )
-                )
-            ).order_by('group__name')
+                total_amount=Coalesce(Sum('amount'), Decimal('0.00')),
+                total_count=Coalesce(Sum(Case(When(id__isnull=False, then=1),
+                default=0, output_field=DecimalField())), Decimal('0.00')),
+                total_receive=Coalesce(Sum(Case(
+                    When(entry_type='receive', then=F('amount')),
+                    default=Decimal('0.00'), output_field=DecimalField()
+                )), Decimal('0.00')),
+                total_pay=Coalesce(Sum(Case(
+                    When(entry_type='pay', then=F('amount')),
+                    default=Decimal('0.00'), output_field=DecimalField()
+                )), Decimal('0.00')),
+            )
+            .order_by('bucket')
+        )
 
-        final_group_summary_data = []
-        for item in group_summary_data:
-            collected_amount = item['total_income'] or Decimal('0.00')
-            target_amount = item['group__target_amount'] or Decimal('0.00')
-            remaining_amount = Decimal('0.00')
-            if target_amount > 0:
-                remain = target_amount - collected_amount
-                if remain > 0:
-                    remaining_amount = remain
-
-            final_group_summary_data.append({
-                'group_name': item['group__name'],
-                'target_amount': item['group__target_amount'],
-                'total_income': item['total_income'],
-                'total_expense': item['total_expense'],
-                'balance': item['balance'],
-                'collected_amount': collected_amount,
-                'remaining_amount': remaining_amount,
-            })
-
+        # DRF JSON response
         return Response({
-            'overall_summary': {
-                'total_income': total_income,
-                'total_expense': total_expense,
-                'net_balance': (total_income or Decimal('0.00')) - (total_expense or Decimal('0.00')),
-            },
-            'group_wise_summary': final_group_summary_data
+            'period': period,
+            'results': [
+                {
+                    'period_start': row['bucket'],
+                    'total_amount': row['total_amount'],
+                    'total_count': int(row['total_count']),  # Decimal → int
+                    'total_receive': row['total_receive'],
+                    'total_pay': row['total_pay'],
+                } for row in data
+            ]
         })
 
 
@@ -421,61 +444,68 @@ class AuditEntryViewSet(viewsets.ModelViewSet):
         serializer.save(auditor=self.request.user)
 
 
-# class PasswordChangeView(APIView):
-#     permission_classes = [IsAuthenticated]
+class PasswordChangeView(APIView):
+    permission_classes = [IsAuthenticated]
 
-#     def post(self, request):
-#         user = request.user
-#         target_user_id = request.data.get('user_id')
-#         new_password = request.data.get('new_password')
+    def post(self, request):
+        user = request.user
+        target_user_id = request.data.get('user_id')
+        new_password = request.data.get('new_password')
 
-#         if not new_password:
-#             return Response({'detail': 'New password is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not new_password:
+            return Response({'detail': 'New password is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-#         if target_user_id:
-#             if user.is_superuser or user.user_type == 'owner':
-#                 try:
-#                     target_user = User.objects.get(id=target_user_id)
-#                 except User.DoesNotExist:
-#                     return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-#             else:
-#                 return Response({'detail': 'You do not have permission to change this password.'}, status=status.HTTP_403_FORBIDDEN)
-#         else:
-#             target_user = user
+        if target_user_id:
+            if user.is_superuser or user.user_type == 'owner':
+                try:
+                    target_user = User.objects.get(id=target_user_id)
+                except User.DoesNotExist:
+                    return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                return Response({'detail': 'You do not have permission to change this password.'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            target_user = user
 
-#         if user.user_type == 'auditor' and target_user != user:
-#             return Response({'detail': 'Auditors can only change their own password.'}, status=status.HTTP_403_FORBIDDEN)
+        if user.user_type == 'auditor' and target_user != user:
+            return Response({'detail': 'Auditors can only change their own password.'}, status=status.HTTP_403_FORBIDDEN)
 
-#         target_user.set_password(new_password)
-#         target_user.save()
-#         return Response({'detail': 'Password updated successfully.'})
+        target_user.set_password(new_password)
+        target_user.save()
+        return Response({'detail': 'Password updated successfully.'})
 
 class AuditSummaryView(APIView):
-    permission_classes = [IsOwnerUser]
+    permission_classes = [IsOwnerOrAuditor]  # type: ignore # ← Auditor & Owner လိုသလိုခေါ်နိုင်
 
     def get(self, request, *args, **kwargs):
         try:
-            total_income_transactions = Transaction.objects.filter(transaction_type='income').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-            total_expense_transactions = Transaction.objects.filter(transaction_type='expense').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            # optional date filters: ?start=YYYY-MM-DD&end=YYYY-MM-DD
+            start = request.query_params.get('start')
+            end = request.query_params.get('end')
+            start_d = parse_date(start) if start else None
+            end_d = parse_date(end) if end else None
+
+            qs = Transaction.objects.all()
+            if start_d:
+                qs = qs.filter(transaction_date__gte=start_d)
+            if end_d:
+                qs = qs.filter(transaction_date__lte=end_d)
+
+            def agg(q):
+                return q.aggregate(total=Coalesce(Sum('amount'), Decimal('0.00')))['total']
+
+            total_income_transactions = agg(qs.filter(transaction_type='income'))
+            total_expense_transactions = agg(qs.filter(transaction_type='expense'))
             total_balance = total_income_transactions - total_expense_transactions
 
-            audited_income = Transaction.objects.filter(
-                transaction_type='income', status='approved'
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-            audited_expense = Transaction.objects.filter(
-                transaction_type='expense', status='approved'
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            audited_income = agg(qs.filter(transaction_type='income', status='approved'))
+            audited_expense = agg(qs.filter(transaction_type='expense', status='approved'))
             audited_balance = audited_income - audited_expense
 
-            unapproved_income = Transaction.objects.filter(
-                transaction_type='income', status='pending'
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
-            unapproved_expense = Transaction.objects.filter(
-                transaction_type='expense', status='pending'
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            unapproved_income = agg(qs.filter(transaction_type='income', status='pending'))
+            unapproved_expense = agg(qs.filter(transaction_type='expense', status='pending'))
             unapproved_balance = unapproved_income - unapproved_expense
 
-            summary_data = {
+            payload = {
                 'total_income': total_income_transactions,
                 'total_expense': total_expense_transactions,
                 'balance': total_balance,
@@ -487,9 +517,7 @@ class AuditSummaryView(APIView):
                 'unapproved_balance': unapproved_balance,
                 'last_updated': timezone.now(),
             }
-
-            serializer = AuditSummarySerializer(summary_data)
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(AuditSummarySerializer(payload).data, status=status.HTTP_200_OK)
 
         except Exception as e:
             print(f"Error calculating audit summary: {e}")
@@ -497,7 +525,6 @@ class AuditSummaryView(APIView):
                 {"detail": "Failed to calculate audit summary."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 
 class ChangePasswordView(APIView):

@@ -1,188 +1,257 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+
+import 'package:lastsheetapp/screens/auth/change_password_screen.dart';
+import 'package:lastsheetapp/screens/auth/login_screen.dart';
+import 'package:lastsheetapp/screens/transactions/transaction_detail_screen.dart';
+import 'package:lastsheetapp/screens/transactions/transaction_form_screen.dart';
+import 'package:lastsheetapp/screens/transactions/transaction_list_screen.dart';
+import 'package:lastsheetapp/screens/audit_entries/audit_entry_list_screen.dart';
+
 import '../../providers/transaction_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/transaction.dart';
 import '../../utils/custom_dialogs.dart';
-import 'package:intl/intl.dart';
-
-// Screens for navigation
-
 import '../../utils/constants.dart';
-import 'audit_entries/audit_entry_list_screen.dart';
-import 'audit_entries/audit_summary_screen.dart';
-import 'auth/login_screen.dart';
-import 'transactions/transaction_detail_screen.dart';
-import 'transactions/transaction_form_screen.dart'; // For Constants.baseUrl
+import '../../widgets/audit_entries_summary_widget.dart';
 
 class AuditorDashboardScreen extends StatefulWidget {
   const AuditorDashboardScreen({super.key});
-
   @override
   State<AuditorDashboardScreen> createState() => _AuditorDashboardScreenState();
 }
 
-class _AuditorDashboardScreenState extends State<AuditorDashboardScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _AuditorDashboardScreenState extends State<AuditorDashboardScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tab;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tab = TabController(length: 3, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<TransactionProvider>(context, listen: false).fetchTransactions();
+      context.read<TransactionProvider>().fetchTransactions();
     });
   }
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _tab.dispose();
     super.dispose();
   }
 
-  Future<void> _reSubmitTransaction(Transaction transaction) async {
-    final bool? confirm = await CustomDialogs.showConfirmationDialog(
+  void _goTab(int i) {
+    Navigator.pop(context);
+    _tab.animateTo(i);
+  }
+
+  Future<void> _logout() async {
+    final ok = await CustomDialogs.showConfirmationDialog(
+      context,
+      'ထွက်မည်လား?',
+      'အကောင့်မှ ထွက်ရန် သေချာပါသလား?',
+    );
+    if (ok == true) {
+      await context.read<AuthProvider>().logout();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => LoginScreen()),
+        (_) => false,
+      );
+    }
+  }
+
+  Future<void> _reSubmitTransaction(Transaction t) async {
+    if (t.id == null) return;
+    if (t.status != 'rejected') {
+      CustomDialogs.showFlushbar(
+        context,
+        'Info',
+        'Reject ဖြစ်ထားမှ ပြန်တင်နိုင်ပါသည်။',
+        MessageType.info,
+      );
+      return;
+    }
+    final ok = await CustomDialogs.showConfirmationDialog(
       context,
       'အတည်ပြုပါ',
-      'ဤငွေကြေးလွှဲပြောင်းမှုကို ပြန်တင်လိုပါသလား။',
+      'ပြန်တင်မလား?',
     );
-
-    if (confirm == true) {
-      try {
-        final updatedTransaction = transaction.copyWith(
-          status: 'pending',
-          ownerNotes: null,
-          approvedByOwnerAt: null,
-        );
-
-        await Provider.of<TransactionProvider>(context, listen: false)
-            .updateTransaction(updatedTransaction);
-
-        CustomDialogs.showFlushbar(context, 'Success', 'ငွေကြေးလွှဲပြောင်းမှုကို ပြန်တင်ပြီးပါပြီ။', MessageType.success);
-      } catch (e) {
-        CustomDialogs.showFlushbar(context, 'Error', 'ငွေကြေးလွှဲပြောင်းမှုကို ပြန်တင်မရပါ။: $e', MessageType.error);
-      }
+    if (ok != true) return;
+    try {
+      await context.read<TransactionProvider>().reSubmitTransaction(t.id!);
+      if (!mounted) return;
+      CustomDialogs.showFlushbar(
+        context,
+        'Success',
+        'ပြန်တင်ပြီးပါပြီ',
+        MessageType.success,
+      );
+      context.read<TransactionProvider>().fetchTransactions();
+    } catch (e) {
+      CustomDialogs.showFlushbar(context, 'Error', '$e', MessageType.error);
     }
   }
 
-  String _buildImageUrl(String? imageUrl) {
-    if (imageUrl == null || imageUrl.isEmpty) {
-      return '';
-    }
-    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-      return imageUrl;
-    }
-    return '${Constants.baseUrl}$imageUrl';
+  String _buildImageUrl(String? url) {
+    if (url == null || url.isEmpty) return '';
+    if (url.startsWith('http')) return url;
+    return '${Constants.baseUrl}$url';
   }
 
-  Widget _buildTransactionList(List<Transaction> transactions, {bool showReSubmitButton = false, bool allowEdit = false}) {
-    if (transactions.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
+  Widget _row(String k, String v, {Color? c}) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4.0),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 150,
           child: Text(
-            showReSubmitButton ? 'ငွေကြေးလွှဲပြောင်းမှု ငြင်းပယ်ခံရသည်များ မရှိပါ။' : 'ငွေကြေးလွှဲပြောင်းမှုများ မရှိပါ။',
-            style: const TextStyle(fontSize: 18, color: Colors.grey),
-            textAlign: TextAlign.center,
+            '$k:',
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.grey,
+            ),
           ),
+        ),
+        Expanded(
+          child: Text(v, style: TextStyle(color: c ?? Colors.black87)),
+        ),
+      ],
+    ),
+  );
+
+  Widget _list(
+    List<Transaction> items, {
+    bool showResubmit = false,
+    bool allowEdit = false,
+  }) {
+    if (items.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('မှတ်တမ်း မရှိပါ'),
         ),
       );
     }
-
     return ListView.builder(
-      padding: const EdgeInsets.all(8.0),
-      itemCount: transactions.length,
-      itemBuilder: (context, index) {
-        final transaction = transactions[index];
+      padding: const EdgeInsets.all(8),
+      itemCount: items.length,
+      itemBuilder: (_, i) {
+        final t = items[i];
         return Card(
-          margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: InkWell(
             onTap: () async {
-              await Navigator.of(context).push(
+              await Navigator.push(
+                context,
                 MaterialPageRoute(
-                  builder: (context) => TransactionDetailScreen(transaction: transaction),
+                  builder: (_) => TransactionDetailScreen(transaction: t),
                 ),
               );
-              Provider.of<TransactionProvider>(context, listen: false).fetchTransactions();
+              if (!mounted) return;
+              context.read<TransactionProvider>().fetchTransactions();
             },
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
+              padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'ဖော်ပြချက်: ${transaction.transactionTypeDisplay} - ${NumberFormat.currency(locale: 'en_US', symbol: 'MMK ').format(transaction.amount)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blueGrey),
+                    'ဖော်ပြချက်: ${t.transactionTypeDisplay ?? t.transactionType} - '
+                    '${NumberFormat.currency(locale: "en_US", symbol: "MMK ").format(t.amount)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: Colors.blueGrey,
+                    ),
                   ),
                   const Divider(height: 16, thickness: 1),
-                  _buildInfoRow('ပမာဏ', NumberFormat.currency(locale: 'en_US', symbol: 'MMK ').format(transaction.amount)),
-                  _buildInfoRow('အမျိုးအစား', transaction.transactionTypeDisplay),
-                  _buildInfoRow('အခြေအနေ', transaction.statusDisplay,
-                      color: transaction.status == 'pending'
-                          ? Colors.orange
-                          : (transaction.status == 'approved' ? Colors.green : Colors.red)),
-                  if (transaction.ownerNotes != null && transaction.ownerNotes!.isNotEmpty)
-                    _buildInfoRow('မှတ်ချက်', transaction.ownerNotes!),
-                  _buildInfoRow('ရက်စွဲ', DateFormat('yyyy-MM-dd').format(transaction.transactionDate)),
-                  _buildInfoRow('အဖွဲ့', transaction.groupName ?? 'N/A'),
-                  _buildInfoRow('ငွေပေးချေမှုအကောင့်', transaction.paymentAccountName ?? 'N/A'),
-                  _buildInfoRow('တင်ပြသူ', transaction.submittedByUsername ?? 'N/A'),
-                  if (transaction.imageUrl != null && transaction.imageUrl!.isNotEmpty)
+                  _row(
+                    'ပမာဏ',
+                    NumberFormat.currency(
+                      locale: 'en_US',
+                      symbol: 'MMK ',
+                    ).format(t.amount),
+                  ),
+                  _row(
+                    'အမျိုးအစား',
+                    t.transactionTypeDisplay ??
+                        (t.transactionType == 'income' ? 'ဝင်ငွေ' : 'ထွက်ငွေ'),
+                  ),
+                  _row(
+                    'အခြေအနေ',
+                    t.statusDisplay ?? t.status,
+                    c: t.status == 'pending'
+                        ? Colors.orange
+                        : (t.status == 'approved' ? Colors.green : Colors.red),
+                  ),
+                  if ((t.ownerNotes ?? '').isNotEmpty)
+                    _row('မှတ်ချက်', t.ownerNotes!),
+                  _row(
+                    'ရက်စွဲ',
+                    DateFormat('yyyy-MM-dd').format(t.transactionDate),
+                  ),
+                  _row('အဖွဲ့', t.groupName),
+                  _row('ငွေပေးချေမှုအကောင့်', t.paymentAccountName),
+                  _row('တင်ပြသူ', t.submittedByUsername ?? 'N/A'),
+                  if ((t.imageUrl ?? '').isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('ပုံ:', style: TextStyle(fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 8),
-                          Center(
-                            child: Image.network(
-                              _buildImageUrl(transaction.imageUrl!),
-                              height: 100,
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, size: 100),
-                            ),
-                          ),
-                        ],
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Center(
+                        child: Image.network(
+                          _buildImageUrl(t.imageUrl),
+                          height: 100,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) =>
+                              const Icon(Icons.broken_image, size: 100),
+                        ),
                       ),
                     ),
-                  const SizedBox(height: 15),
+                  const SizedBox(height: 10),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      if (allowEdit && transaction.status == 'rejected')
+                      if (allowEdit && t.status == 'rejected')
                         Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
+                          padding: const EdgeInsets.only(right: 8),
                           child: ElevatedButton.icon(
                             onPressed: () async {
-                              await Navigator.of(context).push(
+                              await Navigator.push(
+                                context,
                                 MaterialPageRoute(
-                                  builder: (context) => TransactionFormScreen(transaction: transaction),
+                                  builder: (_) =>
+                                      TransactionFormScreen(transaction: t),
                                 ),
                               );
-                              Provider.of<TransactionProvider>(context, listen: false).fetchTransactions();
+                              if (!mounted) return;
+                              context
+                                  .read<TransactionProvider>()
+                                  .fetchTransactions();
                             },
                             icon: const Icon(Icons.edit, color: Colors.white),
-                            label: const Text('ပြင်ဆင်မည်', style: TextStyle(color: Colors.white)),
+                            label: const Text(
+                              'ပြင်ဆင်မည်',
+                              style: TextStyle(color: Colors.white),
+                            ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blue,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
                             ),
                           ),
                         ),
-                      if (showReSubmitButton)
+                      if (showResubmit)
                         ElevatedButton.icon(
-                          onPressed: () => _reSubmitTransaction(transaction),
+                          onPressed: () => _reSubmitTransaction(t),
                           icon: const Icon(Icons.refresh, color: Colors.white),
-                          label: const Text('ပြန်တင်မည်', style: TextStyle(color: Colors.white)),
+                          label: const Text(
+                            'ပြန်တင်မည်',
+                            style: TextStyle(color: Colors.white),
+                          ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
-                            elevation: 5,
                           ),
                         ),
                     ],
@@ -196,144 +265,158 @@ class _AuditorDashboardScreenState extends State<AuditorDashboardScreen> with Si
     );
   }
 
-  Widget _buildInfoRow(String label, String value, {Color? color}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 150,
-            child: Text(
-              '$label:',
-              style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.grey),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: TextStyle(color: color ?? Colors.black87),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final authProvider = Provider.of<AuthProvider>(context);
-    final currentUser = authProvider.currentUser;
-
+    final auth = context.watch<AuthProvider>();
+    final user = auth.currentUser;
     return Scaffold(
       appBar: AppBar(
         title: const Text('စစ်ဆေးသူ Dashboard'),
-        backgroundColor: Colors.teal,
+        backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
-        centerTitle: true,
         bottom: TabBar(
-          controller: _tabController,
-          indicatorColor: Colors.white,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.teal[100],
+          controller: _tab,
+          labelColor: Colors.white, // ✅ white labels
+          unselectedLabelColor: Colors.white70, // ✅ faded white
+          indicatorColor: Colors.white, // ✅ white underline
           tabs: const [
-            Tab(text: 'ငွေပေးချေမှုများ'),
-            Tab(text: 'ငြင်းပယ်ခံရသည်များ'),
+            Tab(text: 'Transactions'),
+            Tab(text: 'Rejected'),
+            Tab(text: 'Audit'),
           ],
         ),
       ),
+
+      // ✅ Drawer: tabs + extra menus
       drawer: Drawer(
         child: ListView(
-          padding: EdgeInsets.zero,
-          children: <Widget>[
+          children: [
             UserAccountsDrawerHeader(
-              accountName: Text(currentUser?.username ?? 'Auditor', style: const TextStyle(fontWeight: FontWeight.bold)),
-              accountEmail: Text(currentUser?.email ?? 'auditor@example.com'),
+              accountName: Text(
+                user?.username ?? 'Owner',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              accountEmail: Text(user?.email ?? ''),
               currentAccountPicture: const CircleAvatar(
                 backgroundColor: Colors.white,
-                child: Icon(Icons.person, size: 50, color: Colors.teal),
+                child: Icon(Icons.person, size: 42, color: Colors.indigo),
               ),
-              decoration: const BoxDecoration(
-                color: Colors.teal,
-              ),
+              decoration: const BoxDecoration(color: Colors.indigo),
             ),
+
+            // Tab navigation
             ListTile(
               leading: const Icon(Icons.receipt),
-              title: const Text('Audit မှတ်တမ်းများ'),
+              title: const Text('Transactions'),
+              onTap: () => _goTab(0),
+            ),
+            ListTile(
+              leading: const Icon(Icons.block),
+              title: const Text('Rejected'),
+              onTap: () => _goTab(1),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bar_chart),
+              title: const Text('Audit Summary'),
+              onTap: () => _goTab(2),
+            ),
+            const Divider(),
+            // Extra pages (were in bottom nav in owner side)
+            ListTile(
+              leading: const Icon(Icons.add_box),
+              title: const Text('New Transaction'),
+              onTap: () async {
+                Navigator.pop(context);
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => TransactionFormScreen()),
+                );
+                if (!mounted) return;
+                context.read<TransactionProvider>().fetchTransactions();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.list),
+              title: const Text('Transactions (All)'),
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => AuditEntryListScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => const TransactionListScreen(),
+                  ),
                 );
               },
             ),
             ListTile(
-              leading: const Icon(Icons.summarize),
-              title: const Text('Audit Summary'),
+              leading: const Icon(Icons.receipt_long),
+              title: const Text('Audit Entries List'),
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => AuditSummaryScreen()),
+                  MaterialPageRoute(builder: (_) => AuditEntryListScreen()),
                 );
               },
             ),
             const Divider(),
             ListTile(
+              leading: const Icon(Icons.lock),
+              title: const Text('စကားဝှက် ပြောင်းမည်'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ChangePasswordScreen(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('ထွက်မည်'),
-              onTap: () async {
-                final bool? confirm = await CustomDialogs.showConfirmationDialog(
-                  context,
-                  'ထွက်မည်လား?',
-                  'သင်အကောင့်မှ ထွက်ရန် သေချာပါသလား?',
-                );
-                if (confirm == true) {
-                  await authProvider.logout();
-                  if (mounted) {
-                    Navigator.of(context).pushAndRemoveUntil(
-                      MaterialPageRoute(builder: (context) => LoginScreen()),
-                      (Route<dynamic> route) => false,
-                    );
-                  }
-                }
-              },
+              onTap: _logout,
             ),
           ],
         ),
       ),
+
       body: Consumer<TransactionProvider>(
-        builder: (context, transactionProvider, child) {
-          if (transactionProvider.isLoading) {
+        builder: (_, tp, __) {
+          if (tp.isLoading) {
             return const Center(child: CircularProgressIndicator());
           }
-          final pendingApprovedTransactions = transactionProvider.transactions
+          final txs = tp.transactions;
+          final list1 = txs
               .where((t) => t.status == 'pending' || t.status == 'approved')
               .toList();
-          final rejectedTransactions = transactionProvider.transactions
-              .where((t) => t.status == 'rejected')
-              .toList();
+          final list2 = txs.where((t) => t.status == 'rejected').toList();
 
           return TabBarView(
-            controller: _tabController,
+            controller: _tab,
             children: [
-              _buildTransactionList(pendingApprovedTransactions, showReSubmitButton: false, allowEdit: false),
-              _buildTransactionList(rejectedTransactions, showReSubmitButton: true, allowEdit: true),
+              _list(list1, showResubmit: false, allowEdit: false),
+              _list(list2, showResubmit: true, allowEdit: true),
+              const SingleChildScrollView(
+                padding: EdgeInsets.all(12),
+                child: AuditEntriesSummaryWidget(title: 'Audit (Auditor View)'),
+              ),
             ],
           );
         },
       ),
-      floatingActionButton: (currentUser?.userType == 'auditor' || currentUser?.userType == 'owner')
+      floatingActionButton:
+          (auth.currentUser?.userType == 'auditor' ||
+              auth.currentUser?.userType == 'owner')
           ? FloatingActionButton(
               onPressed: () async {
-                await Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => TransactionFormScreen()),
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => TransactionFormScreen()),
                 );
-                Provider.of<TransactionProvider>(context, listen: false).fetchTransactions();
+                if (!mounted) return;
+                context.read<TransactionProvider>().fetchTransactions();
               },
               child: const Icon(Icons.add),
-              backgroundColor: Colors.blueAccent,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
             )
           : null,
     );
