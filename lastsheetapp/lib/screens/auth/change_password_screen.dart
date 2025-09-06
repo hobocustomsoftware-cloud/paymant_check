@@ -61,7 +61,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
     setState(() => _submitting = true);
     try {
       // ❗ Map correctly: current → current_password, new → new_password
-      await ApiService().changePassword(
+      await ApiService().changePasswordDjoser(
         currentPassword: _current.text.trim(),
         newPassword: _new1.text.trim(),
       );

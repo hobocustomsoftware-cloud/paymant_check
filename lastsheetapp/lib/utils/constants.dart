@@ -10,14 +10,14 @@ class Constants {
   static String get _baseHost {
     // Check if the app is running on the web FIRST.
     if (kIsWeb) {
-      return 'localhost';
+      return 'https://htoomyateian92.pythonanywhere.com';
     } else if (Platform.isAndroid) {
       return '10.0.2.2'; // Your Android emulator IP
     } else if (Platform.isIOS) {
       return 'localhost'; // Your iOS simulator IP
     } else {
       // Fallback for other platforms (e.g., desktop)
-      return 'localhost';
+      return 'https://htoomyateian92.pythonanywhere.com';
     }
   }
 
